@@ -139,6 +139,8 @@ class MjpegServer(port: Int, private val controller: CameraController) : NanoHTT
                 val wideClass = if (isWideOn) "btn-zoom active" else "btn-zoom"
                 val wideText = if (isWideOn) "🔍 Weit: An" else "🔍 Weitwinkel"
                 val switchCamText = if (isFrontFacing) "🔄 Kamera: Selfie" else "🔄 Kamera wechseln"
+                val driveEmail = GoogleDriveBackupManager.connectedAccountEmail ?: ""
+                val isDriveLinked = GoogleDriveBackupManager.isAutoBackupEnabled && driveEmail.isNotBlank()
 
                 val html = """
                     <!DOCTYPE html>
@@ -356,6 +358,16 @@ class MjpegServer(port: Int, private val controller: CameraController) : NanoHTT
                                     <input type="checkbox" id="fastPhotoCheck" ${if (isFastPhoto) "checked" else ""} onchange="onFastPhotoToggle(this.checked)" style="width:18px;height:18px;cursor:pointer;">
                                 </div>
                                 <div style="font-size:10px;color:#4dabf7;text-align:right;margin-top:-4px;margin-bottom:8px;">🔍 $bestSensorLabel</div>
+
+                                <hr class="section-divider">
+                                <div class="section-label">☁️ Google Drive Cloud</div>
+                                <div class="setting-row" style="font-size:12px;">
+                                    <span>Auto-Upload:</span>
+                                    <span style="font-weight:700;color:${if (isDriveLinked) "#51cf66" else "#adb5bd"};">${if (isDriveLinked) "🟢 Aktiv ($driveEmail)" else "⚪ Inaktiv (in App verknüpfen)"}</span>
+                                </div>
+                                <div style="margin-top:6px;margin-bottom:6px;">
+                                    <a href="https://drive.google.com/drive/u/0/my-drive" target="_blank" style="width:100%;text-align:center;background:rgba(66,133,244,0.15);border:1px solid #4285f4;color:#4dabf7;padding:8px 10px;border-radius:8px;text-decoration:none;font-size:12px;font-weight:600;display:block;box-sizing:border-box;">📁 Google Drive Ordner öffnen ↗</a>
+                                </div>
 
                                 <hr class="section-divider">
                                 <div class="section-label">🔊 Audio &amp; Lautstärke</div>

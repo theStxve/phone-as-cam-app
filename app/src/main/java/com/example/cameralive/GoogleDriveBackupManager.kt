@@ -6,6 +6,9 @@ import com.google.android.gms.auth.GoogleAuthUtil
 import com.google.android.gms.auth.api.signin.GoogleSignIn
 import com.google.android.gms.auth.api.signin.GoogleSignInOptions
 import com.google.android.gms.common.api.Scope
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import java.io.ByteArrayOutputStream
 import java.io.OutputStream
 import java.net.HttpURLConnection
@@ -20,9 +23,9 @@ object GoogleDriveBackupManager {
 
     val DRIVE_SCOPE = Scope("https://www.googleapis.com/auth/drive.file")
 
-    @Volatile var isAutoBackupEnabled = false
-    @Volatile var connectedAccountEmail: String? = null
-    @Volatile var lastBackupStatus = "Kein Backup bisher"
+    var isAutoBackupEnabled by mutableStateOf(false)
+    var connectedAccountEmail by mutableStateOf<String?>(null)
+    var lastBackupStatus by mutableStateOf("Kein Backup bisher")
 
     private val executor = Executors.newSingleThreadExecutor()
 

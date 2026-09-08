@@ -427,7 +427,7 @@ fun AutomationConfigDialog(
     var alarmEnabled by remember { mutableStateOf(WebhookManager.alarmWebhookEnabled) }
     var alarmUrl by remember { mutableStateOf(WebhookManager.alarmWebhookUrl) }
 
-    var driveEnabled by remember { mutableStateOf(GoogleDriveBackupManager.isAutoBackupEnabled) }
+    var driveEnabled by remember(GoogleDriveBackupManager.isAutoBackupEnabled) { mutableStateOf(GoogleDriveBackupManager.isAutoBackupEnabled) }
     val connectedAccount = GoogleDriveBackupManager.connectedAccountEmail
 
     var selectedTab by remember { mutableStateOf(0) }
