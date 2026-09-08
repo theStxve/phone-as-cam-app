@@ -1045,6 +1045,20 @@ class CameraStreamingService : LifecycleService(), CameraController, LocationLis
         }
     }
 
+    /**
+     * Called when the browser viewer toggles audio on/off.
+     * Mutes/unmutes the WebRTC audio track and stops/starts the PCM microphone
+     * so the phone mic is fully idle when nobody is listening — saving battery.
+     */
+    override fun setRemoteAudioEnabled(enabled: Boolean) {
+        webRtcManager?.setAudioEnabled(enabled)
+        if (!enabled) {
+            // Stop PCM mic recording if no one is listening
+            stopMicIfIdle(force = true)
+        }
+        Log.i(TAG, "Remote audio enabled=$enabled")
+    }
+
     @Synchronized
     fun startMicIfNeeded() {
         if (isRecordingAudio.get()) return

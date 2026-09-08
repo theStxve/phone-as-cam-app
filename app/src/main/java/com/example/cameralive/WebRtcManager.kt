@@ -460,6 +460,14 @@ class WebRtcManager(private val context: Context) {
         return responseObj.toString()
     }
 
+    /** Mutes/unmutes the phone microphone track sent via WebRTC.
+     *  Call this when the browser viewer enables/disables audio to save battery. */
+    fun setAudioEnabled(enabled: Boolean) {
+        sessionAudioTrack?.setEnabled(enabled)
+        baseAudioTrack?.setEnabled(enabled)
+        android.util.Log.d("WebRtcManager", "Audio track enabled=$enabled")
+    }
+
     fun release() {
         isPeerConnected.set(false)
         currentVideoSender = null

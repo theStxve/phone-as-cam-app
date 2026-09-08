@@ -19,6 +19,7 @@ interface CameraController {
     fun isFrontFacing(): Boolean
     fun isWideAngleActive(): Boolean
     fun isFlashlightActive(): Boolean
+    fun setRemoteAudioEnabled(enabled: Boolean)
 }
 
 class MjpegServer(port: Int, private val controller: CameraController) : NanoHTTPD(port) {
@@ -622,6 +623,9 @@ class MjpegServer(port: Int, private val controller: CameraController) : NanoHTT
                                     try { await audioCtx.resume(); } catch (e) {}
                                 }
 
+                                // Inform the phone so it can stop/start the mic (battery saving)
+                                fetch('/audio_state?enabled=' + isAudioEnabled, { method: 'POST' }).catch(() => {});
+
                                 if (isAudioEnabled) {
                                     audioBtn.textContent = '🔊 Ton an';
                                     audioBtn.classList.remove('muted');
@@ -693,10 +697,18 @@ class MjpegServer(port: Int, private val controller: CameraController) : NanoHTT
                                         megafonBtn.textContent = '📢 Megafon: An';
                                     } catch (err) {
                                         console.error('Megafon error:', err);
-                                        showBraveHelpModal();
                                         isMegafonActive = false;
                                         megafonBtn.classList.remove('active');
                                         megafonBtn.textContent = '📢 Megafon';
+                                        if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
+                                            alert('🎤 Mikrofon-Zugriff verweigert.\n\nKlicke auf das 🔒 Schloss-Symbol in der Adressleiste → "Mikrofon" → "Erlauben", dann nochmal Megafon drücken.');
+                                        } else if (err.name === 'NotFoundError') {
+                                            alert('❌ Kein Mikrofon gefunden. Bitte ein Mikrofon anschließen.');
+                                        } else if (err.name === 'NotReadableError') {
+                                            alert('⚠️ Mikrofon wird von einer anderen App belegt (z.B. Discord). Bitte schließe diese App zuerst.');
+                                        } else {
+                                            showBraveHelpModal();
+                                        }
                                     }
                                 } else {
                                     try {
@@ -1539,6 +1551,15 @@ class MjpegServer(port: Int, private val controller: CameraController) : NanoHTT
                 response.addHeader("Cache-Control", "no-cache, no-store, must-revalidate")
                 response.addHeader("Access-Control-Allow-Origin", "*")
                 return response
+            }
+            "/audio_state" -> {
+                if (session.method == Method.POST) {
+                    val enabled = session.parameters["enabled"]?.firstOrNull()?.lowercase() == "true"
+                    controller.setRemoteAudioEnabled(enabled)
+                    val res = newFixedLengthResponse(Response.Status.OK, "application/json", "{\"audioEnabled\": $enabled}")
+                    res.addHeader("Access-Control-Allow-Origin", "*")
+                    return res
+                }
             }
             "/toggle_flashlight" -> {
                 if (session.method == Method.POST) {
