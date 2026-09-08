@@ -259,7 +259,7 @@ class MjpegServer(port: Int, private val controller: CameraController) : NanoHTT
                             <div id="sensorInfo" style="font-size: 10px; color: #4dabf7; margin-top: 4px; text-align: right;" title="Wird bei normalem Foto für maximale Auflösung genutzt">🔍 $bestSensorLabel</div>
                             <div style="border-top: 1px solid rgba(255,255,255,0.15); margin: 8px 0;"></div>
                             <div style="font-weight: bold; margin-bottom: 6px; color: #aaa; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px;">🔊 Audio &amp; Lautstärke</div>
-                            <label>🎤 Mikrofon: <input type="range" id="volSlider" min="0" max="500" step="10" value="250" oninput="onVolumeChange(this.value)"> <span id="volVal" style="color: #4dabf7; width: 42px;">250%</span></label>
+                            <label>🎤 Mikrofon: <input type="range" id="volSlider" min="0" max="300" step="10" value="100" oninput="onVolumeChange(this.value)"> <span id="volVal" style="color: #4dabf7; width: 42px;">100%</span></label>
                             <label style="margin-top: 4px;">📢 Megafon: <input type="range" id="megafonVolSlider" min="0" max="100" step="5" value="100" oninput="onMegafonVolumeChange(this.value)"> <span id="megafonVolVal" style="color: #ff6b6b; width: 42px;">100%</span></label>
                             <label style="display: flex; align-items: center; justify-content: space-between; margin-top: 6px; font-size: 11px; cursor: pointer;">
                                 <span>🛡️ Anti-Clipping (Limiter):</span>
@@ -353,7 +353,7 @@ class MjpegServer(port: Int, private val controller: CameraController) : NanoHTT
                             let selfieActive = ${if (isSelfieOn) "true" else "false"};
                             let currentRotation = 0;
                             let isAudioEnabled = false;
-                            let userVolume = 2.5;
+                            let userVolume = 1.0;
                             let megafonVolume = 100;
                             let audioCtx = null;
                             let audioGainNode = null;
@@ -363,8 +363,17 @@ class MjpegServer(port: Int, private val controller: CameraController) : NanoHTT
                             let pcmAbortController = null;
 
                             let isLimiterEnabled = true;
-                            let audioCompressor = null;
+                            let audioWaveShaper = null;
                             let audioHighpass = null;
+
+                            function makeTanhCurve(samples = 1024) {
+                                const curve = new Float32Array(samples);
+                                for (let i = 0; i < samples; ++i) {
+                                    const x = (i * 2) / samples - 1;
+                                    curve[i] = Math.tanh(x);
+                                }
+                                return curve;
+                            }
 
                             function initAudioPipeline() {
                                 if (!audioCtx) {
@@ -373,22 +382,19 @@ class MjpegServer(port: Int, private val controller: CameraController) : NanoHTT
                                     } catch (e) {}
                                 }
                                 if (audioCtx && !audioGainNode) {
-                                    // 1. Gain Node
+                                    // 1. Gain Node (Starts at clean 100%)
                                     audioGainNode = audioCtx.createGain();
                                     audioGainNode.gain.value = isAudioEnabled ? userVolume : 0.0;
 
                                     // 2. High-pass filter to eliminate sub-bass rumble & feedback resonance
                                     audioHighpass = audioCtx.createBiquadFilter();
                                     audioHighpass.type = 'highpass';
-                                    audioHighpass.frequency.value = 110;
+                                    audioHighpass.frequency.value = 120;
 
-                                    // 3. Studio-grade Limiter / Dynamic Compressor against clipping & feedback oscillation
-                                    audioCompressor = audioCtx.createDynamicsCompressor();
-                                    audioCompressor.threshold.setValueAtTime(-14, audioCtx.currentTime);
-                                    audioCompressor.knee.setValueAtTime(4, audioCtx.currentTime);
-                                    audioCompressor.ratio.setValueAtTime(20, audioCtx.currentTime); // Brickwall limiting
-                                    audioCompressor.attack.setValueAtTime(0.002, audioCtx.currentTime); // 2ms attack
-                                    audioCompressor.release.setValueAtTime(0.12, audioCtx.currentTime);
+                                    // 3. Clean WaveShaper Soft-Clipper: Clamps peaks without ANY automatic make-up gain (prevents feedback pumping)
+                                    audioWaveShaper = audioCtx.createWaveShaper();
+                                    audioWaveShaper.curve = makeTanhCurve(1024);
+                                    audioWaveShaper.oversample = '2x';
 
                                     // 4. Analyser
                                     audioAnalyser = audioCtx.createAnalyser();
@@ -405,13 +411,13 @@ class MjpegServer(port: Int, private val controller: CameraController) : NanoHTT
                                 try {
                                     audioGainNode.disconnect();
                                     if (audioHighpass) audioHighpass.disconnect();
-                                    if (audioCompressor) audioCompressor.disconnect();
+                                    if (audioWaveShaper) audioWaveShaper.disconnect();
                                     if (audioAnalyser) audioAnalyser.disconnect();
 
-                                    if (isLimiterEnabled && audioCompressor && audioHighpass) {
+                                    if (isLimiterEnabled && audioHighpass && audioWaveShaper) {
                                         audioGainNode.connect(audioHighpass);
-                                        audioHighpass.connect(audioCompressor);
-                                        audioCompressor.connect(audioAnalyser);
+                                        audioHighpass.connect(audioWaveShaper);
+                                        audioWaveShaper.connect(audioAnalyser);
                                     } else {
                                         audioGainNode.connect(audioAnalyser);
                                     }
