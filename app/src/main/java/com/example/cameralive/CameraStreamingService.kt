@@ -107,6 +107,13 @@ class CameraStreamingService : LifecycleService(), CameraController, LocationLis
     // Separate quality for on-demand photos (independent of stream quality)
     val photoJpegQuality = AtomicInteger(95)
 
+    // false = high-res mode (best sensor, ~1-2s stream pause)
+    // true  = fast mode (stream camera, no pause, lower resolution)
+    val fastPhotoMode = AtomicBoolean(false)
+
+    // Human-readable label of the auto-detected best camera (filled on first use)
+    @Volatile var detectedCameraLabel: String = "Erkenne..."
+
     // ImageCapture use-case for native full-sensor-resolution photos
     @Volatile private var imageCapture: ImageCapture? = null
 
@@ -199,57 +206,178 @@ class CameraStreamingService : LifecycleService(), CameraController, LocationLis
         photoJpegQuality.set(quality.coerceIn(10, 100))
     }
 
-    fun takeHighQualityPhoto(): ByteArray? {
-        val capture = imageCapture
-        if (capture != null) {
-            // --- Path A: ImageCapture (native sensor resolution) ---
-            val latch = CountDownLatch(1)
-            var resultBytes: ByteArray? = null
-            val outputStream = ByteArrayOutputStream()
+    fun setFastPhotoMode(enabled: Boolean) {
+        fastPhotoMode.set(enabled)
+    }
 
-            val outputFileOptions = ImageCapture.OutputFileOptions.Builder(outputStream).build()
-            capture.takePicture(
-                outputFileOptions,
-                cameraExecutor,
-                object : ImageCapture.OnImageSavedCallback {
-                    override fun onImageSaved(outputFileResults: ImageCapture.OutputFileResults) {
-                        resultBytes = outputStream.toByteArray()
-                        latch.countDown()
+    fun takeHighQualityPhoto(): ByteArray? {
+        if (fastPhotoMode.get()) {
+            // --- FAST MODE (0s stream pause, uses currently bound active camera stream / imageCapture) ---
+            val capture = imageCapture
+            if (capture != null) {
+                val latch = CountDownLatch(1)
+                var resultBytes: ByteArray? = null
+                val outputStream = ByteArrayOutputStream()
+                capture.takePicture(
+                    ImageCapture.OutputFileOptions.Builder(outputStream).build(),
+                    cameraExecutor,
+                    object : ImageCapture.OnImageSavedCallback {
+                        override fun onImageSaved(outputFileResults: ImageCapture.OutputFileResults) {
+                            resultBytes = outputStream.toByteArray()
+                            latch.countDown()
+                        }
+                        override fun onError(exception: ImageCaptureException) {
+                            Log.e(TAG, "Fast ImageCapture failed, falling back to frame", exception)
+                            latch.countDown()
+                        }
                     }
-                    override fun onError(exception: ImageCaptureException) {
-                        Log.e(TAG, "ImageCapture failed, will fallback to stream frame", exception)
-                        latch.countDown()
-                    }
+                )
+                try {
+                    latch.await(2000, TimeUnit.MILLISECONDS)
+                } catch (e: Exception) {
+                    Log.w(TAG, "Fast ImageCapture timeout", e)
                 }
-            )
+                if (resultBytes != null && resultBytes.isNotEmpty()) {
+                    Log.i(TAG, "Fast photo captured: ${resultBytes.size / 1024} KB")
+                    return resultBytes
+                }
+            }
+
+            // Fallback to active NV21 frame immediately without pausing stream
+            val streamLatch = CountDownLatch(1)
+            synchronized(photoLock) {
+                latestCapturedPhoto = null
+                this.photoLatch = streamLatch
+                isPhotoRequested = true
+            }
             try {
-                latch.await(5000, TimeUnit.MILLISECONDS)
+                streamLatch.await(2000, TimeUnit.MILLISECONDS)
             } catch (e: Exception) {
-                Log.w(TAG, "ImageCapture timeout", e)
+                Log.w(TAG, "Fast stream-frame fallback timeout", e)
+            } finally {
+                synchronized(photoLock) {
+                    isPhotoRequested = false
+                    this.photoLatch = null
+                }
             }
-            // If we got bytes from ImageCapture, return them (already JPEG with correct EXIF rotation)
-            if (resultBytes != null && resultBytes.isNotEmpty()) {
-                Log.i(TAG, "Native ImageCapture photo: ${resultBytes.size / 1024} KB")
-                return resultBytes
-            }
-            Log.w(TAG, "ImageCapture returned empty — falling back to stream frame")
+            return latestCapturedPhoto
         }
 
-        // --- Path B: Stream-Frame Fallback (limited to streaming resolution) ---
-        val latch = CountDownLatch(1)
+        // --- HIGH-RES NATIVE MODE (Auto-detects best 50MP+ sensor, brief pause & resume) ---
+        if (highResCameraId == null) {
+            highResCameraId = findHighResCameraId()
+        }
+
+        val photoLatch = CountDownLatch(1)
+        var resultBytes: ByteArray? = null
+
+        // Build a CameraX CameraSelector targeting the highest-res physical back camera
+        val highResSelector = highResCameraId?.let { id ->
+            try {
+                CameraSelector.Builder()
+                    .requireLensFacing(CameraSelector.LENS_FACING_BACK)
+                    .addCameraFilter { infos ->
+                        val matched = infos.filter {
+                            Camera2CameraInfo.from(it).cameraId == id
+                        }
+                        if (matched.isNotEmpty()) matched else infos
+                    }
+                    .build()
+            } catch (e: Exception) {
+                Log.w(TAG, "Could not build high-res camera selector", e)
+                null
+            }
+        }
+
+        val captureUseCase = ImageCapture.Builder()
+            .setCaptureMode(ImageCapture.CAPTURE_MODE_MAXIMIZE_QUALITY)
+            .setJpegQuality(photoJpegQuality.get())
+            .setResolutionSelector(
+                ResolutionSelector.Builder()
+                    .setResolutionStrategy(
+                        ResolutionStrategy(
+                            android.util.Size(Int.MAX_VALUE, Int.MAX_VALUE),
+                            ResolutionStrategy.FALLBACK_RULE_CLOSEST_LOWER
+                        )
+                    )
+                    .build()
+            )
+            .build()
+
+        // Perform binding + capture on the main thread (CameraX requirement)
+        val mainHandler = android.os.Handler(mainLooper)
+        mainHandler.post {
+            try {
+                val cameraProvider = ProcessCameraProvider.getInstance(this).get(2, TimeUnit.SECONDS)
+
+                // Temporarily unbind everything so we can open the high-res sensor exclusively
+                cameraProvider.unbindAll()
+                imageCapture = null
+
+                val selector = highResSelector ?: CameraSelector.DEFAULT_BACK_CAMERA
+                cameraProvider.bindToLifecycle(this, selector, captureUseCase)
+                Log.i(TAG, "High-res capture session bound (selector=${highResCameraId ?: "default"})")
+
+                val outputStream = ByteArrayOutputStream()
+                captureUseCase.takePicture(
+                    ImageCapture.OutputFileOptions.Builder(outputStream).build(),
+                    cameraExecutor,
+                    object : ImageCapture.OnImageSavedCallback {
+                        override fun onImageSaved(outputFileResults: ImageCapture.OutputFileResults) {
+                            resultBytes = outputStream.toByteArray()
+                            Log.i(TAG, "High-res photo: ${(resultBytes?.size ?: 0) / 1024} KB")
+                            // Restart streaming immediately after photo is saved
+                            mainHandler.post {
+                                try { cameraProvider.unbindAll() } catch (_: Exception) {}
+                                startCamera()
+                            }
+                            photoLatch.countDown()
+                        }
+                        override fun onError(exception: ImageCaptureException) {
+                            Log.e(TAG, "High-res ImageCapture failed", exception)
+                            mainHandler.post {
+                                try { cameraProvider.unbindAll() } catch (_: Exception) {}
+                                startCamera()
+                            }
+                            photoLatch.countDown()
+                        }
+                    }
+                )
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to bind high-res capture session", e)
+                // Restart streaming even on failure
+                mainHandler.post { startCamera() }
+                photoLatch.countDown()
+            }
+        }
+
+        // Wait for the photo (up to 8s for the full round-trip on slow sensors)
+        try {
+            photoLatch.await(8000, TimeUnit.MILLISECONDS)
+        } catch (e: Exception) {
+            Log.w(TAG, "High-res capture wait timeout", e)
+        }
+
+        if (resultBytes != null && resultBytes.isNotEmpty()) {
+            return resultBytes
+        }
+
+        // --- Last-resort fallback: grab a frame from the active stream ---
+        Log.w(TAG, "High-res path failed — falling back to stream frame")
+        val streamLatch = CountDownLatch(1)
         synchronized(photoLock) {
             latestCapturedPhoto = null
-            photoLatch = latch
+            this.photoLatch = streamLatch
             isPhotoRequested = true
         }
         try {
-            latch.await(3500, TimeUnit.MILLISECONDS)
+            streamLatch.await(3500, TimeUnit.MILLISECONDS)
         } catch (e: Exception) {
-            Log.w(TAG, "Stream-frame photo capture timeout", e)
+            Log.w(TAG, "Stream-frame fallback timeout", e)
         } finally {
             synchronized(photoLock) {
                 isPhotoRequested = false
-                photoLatch = null
+                this.photoLatch = null
             }
         }
         return latestCapturedPhoto
@@ -324,6 +452,43 @@ class CameraStreamingService : LifecycleService(), CameraController, LocationLis
     override fun onProviderEnabled(provider: String) {}
     override fun onProviderDisabled(provider: String) {}
 
+    // Physical camera ID of the back sensor with the most megapixels (e.g. the 50MP sensor)
+    @Volatile private var highResCameraId: String? = null
+
+    /** Scans all back-facing physical cameras and returns the ID of the one with the highest JPEG resolution. */
+    private fun findHighResCameraId(): String? {
+        try {
+            val cm = getSystemService(Context.CAMERA_SERVICE) as CameraManager
+            var bestId: String? = null
+            var maxPixels = 0L
+            for (id in cm.cameraIdList) {
+                val chars = cm.getCameraCharacteristics(id)
+                if (chars.get(CameraCharacteristics.LENS_FACING) != CameraCharacteristics.LENS_FACING_BACK) continue
+                val map = chars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP) ?: continue
+                val jpegSizes = map.getOutputSizes(android.graphics.ImageFormat.JPEG) ?: continue
+                for (size in jpegSizes) {
+                    val pixels = size.width.toLong() * size.height
+                    if (pixels > maxPixels) {
+                        maxPixels = pixels
+                        bestId = id
+                    }
+                }
+            }
+            if (bestId != null) {
+                val mp = (maxPixels + 500_000) / 1_000_000
+                detectedCameraLabel = "Sensor #$bestId (~${mp} MP)"
+                Log.i(TAG, "Highest-res back camera: ID=$bestId  ($mp MP)")
+            } else {
+                detectedCameraLabel = "Standard-Sensor"
+            }
+            return bestId
+        } catch (e: Exception) {
+            Log.w(TAG, "Error scanning cameras for highest resolution", e)
+            detectedCameraLabel = "Auto"
+            return null
+        }
+    }
+
     private fun findUltraWideCameraId(): String? {
         try {
             val cm = getSystemService(Context.CAMERA_SERVICE) as CameraManager
@@ -364,6 +529,9 @@ class CameraStreamingService : LifecycleService(), CameraController, LocationLis
 
             if (ultraWideCameraId == null) {
                 ultraWideCameraId = findUltraWideCameraId()
+            }
+            if (highResCameraId == null) {
+                highResCameraId = findHighResCameraId()
             }
 
             val currentRes = targetResolution.get() ?: "480p"

@@ -91,6 +91,8 @@ class MjpegServer(port: Int, private val controller: CameraController) : NanoHTT
                 val currentFps = service?.maxFps?.get() ?: 20
                 val currentRes = service?.targetResolution?.get() ?: "480p"
                 val currentPhotoQuality = service?.photoJpegQuality?.get() ?: 95
+                val isFastPhoto = service?.fastPhotoMode?.get() ?: false
+                val bestSensorLabel = service?.detectedCameraLabel ?: "Wird ermittelt..."
                 val isSelfieOn = service?.isFrontCameraEnabled?.get() ?: false
                 val selfieDisplay = if (isSelfieOn) "block" else "none"
                 val selfieBtnClass = if (isSelfieOn) "btn-selfie active" else "btn-selfie"
@@ -205,6 +207,11 @@ class MjpegServer(port: Int, private val controller: CameraController) : NanoHTT
                             <div style="border-top: 1px solid rgba(255,255,255,0.15); margin: 8px 0;"></div>
                             <div style="font-weight: bold; margin-bottom: 6px; color: #aaa; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px;">📸 Foto-Einstellungen</div>
                             <label>Foto-Qualität: <input type="range" id="photoQuality" min="50" max="100" step="5" value="$currentPhotoQuality"> <span id="pqVal">$currentPhotoQuality</span></label>
+                            <label style="display: flex; align-items: center; justify-content: space-between; margin-top: 6px; font-size: 11px; cursor: pointer;">
+                                <span>⚡ Schnell-Foto (ohne Pause):</span>
+                                <input type="checkbox" id="fastPhotoCheck" ${if (isFastPhoto) "checked" else ""} onchange="onFastPhotoToggle(this.checked)" style="width: 16px; height: 16px; cursor: pointer;">
+                            </label>
+                            <div id="sensorInfo" style="font-size: 10px; color: #4dabf7; margin-top: 4px; text-align: right;" title="Wird bei normalem Foto für maximale Auflösung genutzt">🔍 $bestSensorLabel</div>
                         </div>
                         
                         <div class="controls">
@@ -881,6 +888,10 @@ class MjpegServer(port: Int, private val controller: CameraController) : NanoHTT
                                 fetch('/set_photo_quality?value=' + encodeURIComponent(val), { method: 'POST' }).catch(() => {});
                             }
 
+                            function onFastPhotoToggle(checked) {
+                                fetch('/toggle_fast_photo?enabled=' + checked, { method: 'POST' }).catch(() => {});
+                            }
+
                             function onResChange(val) {
                                 clearPresetActive();
                                 fetch('/settings?res=' + encodeURIComponent(val), { method: 'POST' }).catch(() => {});
@@ -1071,6 +1082,13 @@ class MjpegServer(port: Int, private val controller: CameraController) : NanoHTT
                     val q = session.parms["value"]?.toIntOrNull()?.coerceIn(10, 100) ?: 95
                     service?.setPhotoQuality(q)
                     return newFixedLengthResponse(Response.Status.OK, "application/json", "{\"photoQuality\": $q}")
+                }
+            }
+            "/toggle_fast_photo" -> {
+                if (session.method == Method.POST) {
+                    val enabled = session.parms["enabled"]?.toBoolean() ?: false
+                    service?.setFastPhotoMode(enabled)
+                    return newFixedLengthResponse(Response.Status.OK, "application/json", "{\"fastPhotoMode\": $enabled}")
                 }
             }
             "/location" -> {
