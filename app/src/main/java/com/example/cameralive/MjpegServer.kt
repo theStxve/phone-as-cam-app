@@ -24,6 +24,9 @@ interface CameraController {
     fun getExposureCompensation(): Int
     fun getExposureRange(): Pair<Int, Int>
     fun getExposureStep(): Float
+    fun setZoomRatio(ratio: Float): Float
+    fun getZoomRatio(): Float
+    fun getZoomRange(): Pair<Float, Float>
 }
 
 class MjpegServer(port: Int, private val controller: CameraController) : NanoHTTPD(port) {
@@ -150,6 +153,8 @@ class MjpegServer(port: Int, private val controller: CameraController) : NanoHTT
                 val expStep = controller.getExposureStep()
                 val expEvVal = expCurrent * expStep
                 val expEvLabel = String.format(java.util.Locale.US, "%+.1f EV", expEvVal)
+                val zoomRange = controller.getZoomRange()
+                val zoomCurrent = controller.getZoomRatio()
 
                 val html = """
                     <!DOCTYPE html>
@@ -374,6 +379,18 @@ class MjpegServer(port: Int, private val controller: CameraController) : NanoHTT
                                     <button class="btn-preset ${if (expCurrent < -1) "active" else ""}" id="evDarkBtn" onclick="setExposurePreset(-3)" title="Dunkler für Gegenlicht &amp; helle Szenen">☀️ Hell (-1 EV)</button>
                                     <button class="btn-preset ${if (expCurrent == 0) "active" else ""}" id="evAutoBtn" onclick="setExposurePreset(0)" title="Automatische Standard-Belichtung">⚖️ Auto (0 EV)</button>
                                     <button class="btn-preset ${if (expCurrent > 1) "active" else ""}" id="evNightBtn" onclick="setExposurePreset(3)" title="Heller für dunkle Nacht-Szenen">🌙 Nacht (+1 EV)</button>
+                                </div>
+
+                                <hr class="section-divider">
+                                <div class="section-label">🔍 Hardware-Zoom &amp; Tele-Optik</div>
+                                <div class="setting-row">
+                                    <label>Zoom: <input type="range" id="zoomSlider" min="${zoomRange.first}" max="${zoomRange.second}" step="0.1" value="$zoomCurrent" oninput="onZoomInput(this.value)" onchange="onZoomChange(this.value)"> <span class="val-badge" id="zoomVal" style="color:#a78bfa;">${String.format(java.util.Locale.US, "%.1fx", zoomCurrent)}</span></label>
+                                </div>
+                                <div class="preset-group" style="grid-template-columns: repeat(4, 1fr); margin-bottom: 8px;">
+                                    <button class="btn-preset ${if (zoomCurrent <= 1.05f) "active" else ""}" id="zoom1xBtn" onclick="setZoomPreset(1.0)" title="1x Hauptlinse">1x</button>
+                                    <button class="btn-preset ${if (zoomCurrent in 1.9f..2.1f) "active" else ""}" id="zoom2xBtn" onclick="setZoomPreset(2.0)" title="2x Vergrößerung">2x</button>
+                                    <button class="btn-preset ${if (zoomCurrent in 2.9f..3.1f) "active" else ""}" id="zoom3xBtn" onclick="setZoomPreset(3.0)" title="3x Tele-Optik">3x</button>
+                                    <button class="btn-preset ${if (zoomCurrent >= 4.9f) "active" else ""}" id="zoom5xBtn" onclick="setZoomPreset(5.0)" title="5x Max-Tele">5x</button>
                                 </div>
 
                                 <hr class="section-divider">
@@ -1942,6 +1959,82 @@ class MjpegServer(port: Int, private val controller: CameraController) : NanoHTT
                             }
                             fetchExposureState();
 
+                            // --- Hardware Zoom Control ---
+                            let currentZoom = $zoomCurrent;
+                            let zoomMin = ${zoomRange.first};
+                            let zoomMax = ${zoomRange.second};
+
+                            function onZoomInput(val) {
+                                currentZoom = parseFloat(val);
+                                const zoomVal = document.getElementById('zoomVal');
+                                if (zoomVal) zoomVal.textContent = currentZoom.toFixed(1) + 'x';
+
+                                const b1 = document.getElementById('zoom1xBtn');
+                                const b2 = document.getElementById('zoom2xBtn');
+                                const b3 = document.getElementById('zoom3xBtn');
+                                const b5 = document.getElementById('zoom5xBtn');
+                                if (b1) b1.classList.toggle('active', Math.abs(currentZoom - 1.0) < 0.15);
+                                if (b2) b2.classList.toggle('active', Math.abs(currentZoom - 2.0) < 0.2);
+                                if (b3) b3.classList.toggle('active', Math.abs(currentZoom - 3.0) < 0.2);
+                                if (b5) b5.classList.toggle('active', currentZoom >= 4.8);
+                            }
+
+                            async function onZoomChange(val) {
+                                onZoomInput(val);
+                                try {
+                                    await fetch('/set_zoom?ratio=' + encodeURIComponent(val), { method: 'POST' });
+                                } catch(e) {}
+                            }
+
+                            function setZoomPreset(ratio) {
+                                const slider = document.getElementById('zoomSlider');
+                                if (slider) {
+                                    slider.value = ratio;
+                                    onZoomChange(ratio);
+                                }
+                            }
+
+                            async function fetchZoomState() {
+                                try {
+                                    const resp = await fetch('/zoom_state');
+                                    if (resp.ok) {
+                                        const data = await resp.json();
+                                        if (data.min !== undefined) zoomMin = data.min;
+                                        if (data.max !== undefined) zoomMax = data.max;
+                                        const slider = document.getElementById('zoomSlider');
+                                        if (slider) {
+                                            slider.min = zoomMin;
+                                            slider.max = zoomMax;
+                                            if (data.current !== undefined && document.activeElement !== slider) {
+                                                slider.value = data.current;
+                                                onZoomInput(data.current);
+                                            }
+                                        }
+                                    }
+                                } catch(e) {}
+                            }
+                            fetchZoomState();
+
+                            // Wheel / Scroll Zoom on Video Stream
+                            let zoomThrottleTimer = null;
+                            const streamBox = document.getElementById('streamContainer');
+                            if (streamBox) {
+                                streamBox.addEventListener('wheel', (e) => {
+                                    e.preventDefault();
+                                    const delta = e.deltaY < 0 ? 0.2 : -0.2;
+                                    const newZoom = Math.min(zoomMax, Math.max(zoomMin, Math.round((currentZoom + delta) * 10) / 10));
+                                    if (newZoom !== currentZoom) {
+                                        const slider = document.getElementById('zoomSlider');
+                                        if (slider) slider.value = newZoom;
+                                        onZoomInput(newZoom);
+                                        if (zoomThrottleTimer) clearTimeout(zoomThrottleTimer);
+                                        zoomThrottleTimer = setTimeout(() => {
+                                            onZoomChange(newZoom);
+                                        }, 80);
+                                    }
+                                }, { passive: false });
+                            }
+
                             function onGpsIntervalChange(val) {
                                 fetch('/set_gps_interval?interval=' + encodeURIComponent(val), { method: 'POST' }).catch(() => {});
                             }
@@ -2282,6 +2375,25 @@ class MjpegServer(port: Int, private val controller: CameraController) : NanoHTT
                 val step = controller.getExposureStep()
                 val ev = current * step
                 val json = """{"min":${range.first},"max":${range.second},"step":$step,"current":$current,"ev":$ev}"""
+                val resp = newFixedLengthResponse(Response.Status.OK, "application/json", json)
+                resp.addHeader("Access-Control-Allow-Origin", "*")
+                return resp
+            }
+            "/set_zoom" -> {
+                if (session.method == Method.POST || session.method == Method.GET) {
+                    val ratioStr = session.parms["ratio"] ?: session.parms["value"] ?: "1.0"
+                    val ratio = ratioStr.toFloatOrNull() ?: 1.0f
+                    val newRatio = controller.setZoomRatio(ratio)
+                    val json = """{"success":true,"zoom":$newRatio}"""
+                    val resp = newFixedLengthResponse(Response.Status.OK, "application/json", json)
+                    resp.addHeader("Access-Control-Allow-Origin", "*")
+                    return resp
+                }
+            }
+            "/zoom_state" -> {
+                val current = controller.getZoomRatio()
+                val range = controller.getZoomRange()
+                val json = """{"min":${range.first},"max":${range.second},"current":$current}"""
                 val resp = newFixedLengthResponse(Response.Status.OK, "application/json", json)
                 resp.addHeader("Access-Control-Allow-Origin", "*")
                 return resp

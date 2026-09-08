@@ -91,6 +91,7 @@ class CameraStreamingService : LifecycleService(), CameraController, LocationLis
     val targetResolution = AtomicReference<String>("480p") // "480p", "720p", "1080p"
     val isFrontCameraEnabled = AtomicBoolean(false)
     val currentExposureIndex = AtomicInteger(0)
+    val currentZoomRatio = AtomicReference<Float>(1.0f)
     
     @Volatile private var lastBackFrameTime = 0L
     @Volatile private var lastFrontFrameTime = 0L
@@ -879,12 +880,12 @@ class CameraStreamingService : LifecycleService(), CameraController, LocationLis
 
     private fun applyWideAngleIfActive() {
         val cam = activeCamera ?: return
-        if (currentLensFacing != CameraSelector.LENS_FACING_BACK) return
+        val minZoom = cam.cameraInfo.zoomState.value?.minZoomRatio ?: 1.0f
+        val maxZoom = cam.cameraInfo.zoomState.value?.maxZoomRatio ?: 10.0f
         val zoomRatio = if (isWideAngle) {
-            val minZoom = cam.cameraInfo.zoomState.value?.minZoomRatio ?: 1.0f
             if (minZoom < 1.0f) minZoom else 1.0f
         } else {
-            1.0f
+            currentZoomRatio.get().coerceIn(minZoom, maxZoom)
         }
         try {
             cam.cameraControl.setZoomRatio(zoomRatio)
@@ -1337,6 +1338,33 @@ class CameraStreamingService : LifecycleService(), CameraController, LocationLis
         val cam = activeCamera
         val step = cam?.cameraInfo?.exposureState?.exposureCompensationStep
         return if (step != null && step.denominator != 0) step.numerator.toFloat() / step.denominator.toFloat() else 0.333f
+    }
+
+    override fun setZoomRatio(ratio: Float): Float {
+        val cam = activeCamera
+        var target = ratio
+        if (cam != null) {
+            val min = cam.cameraInfo.zoomState.value?.minZoomRatio ?: 1.0f
+            val max = cam.cameraInfo.zoomState.value?.maxZoomRatio ?: 10.0f
+            target = ratio.coerceIn(min, max)
+            try {
+                cam.cameraControl.setZoomRatio(target)
+                Log.i(TAG, "Hardware zoom set to: ${target}x (Range: $min - $max)")
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to set zoom ratio to $target", e)
+            }
+        }
+        currentZoomRatio.set(target)
+        return target
+    }
+
+    override fun getZoomRatio(): Float = currentZoomRatio.get()
+
+    override fun getZoomRange(): Pair<Float, Float> {
+        val cam = activeCamera
+        val min = cam?.cameraInfo?.zoomState?.value?.minZoomRatio ?: 1.0f
+        val max = cam?.cameraInfo?.zoomState?.value?.maxZoomRatio ?: 10.0f
+        return Pair(min, max)
     }
 
     private val isMegafonActive = AtomicBoolean(false)
