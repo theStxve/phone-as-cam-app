@@ -47,6 +47,7 @@ androidx-camera-view = { module = "androidx.camera:camera-view", version.ref = "
 nanohttpd = { module = "org.nanohttpd:nanohttpd", version.ref = "nanohttpd" }
 stream-webrtc = { module = "io.getstream:stream-webrtc-android", version.ref = "webrtc" }
 play-services-auth = { module = "com.google.android.gms:play-services-auth", version = "21.3.0" }
+mediapipe-tasks-vision = { module = "com.google.mediapipe:tasks-vision", version = "0.10.14" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "androidGradlePlugin" }

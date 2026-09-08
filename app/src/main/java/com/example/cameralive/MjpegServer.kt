@@ -270,14 +270,17 @@ class MjpegServer(port: Int, private val controller: CameraController) : NanoHTT
                             .vu-bar { flex: 1; height: 8px; background: #1e1e2c; border-radius: 4px; overflow: hidden; border: 1px solid rgba(255,255,255,0.15); }
                             .vu-fill { width: 0%; height: 100%; background: linear-gradient(90deg, #37b24d 60%, #f59f00 85%, #f03e3e 100%); transition: width 0.05s ease-out; }
                             .brave-link { color: #ff922b; font-size: 11px; text-decoration: underline; cursor: pointer; display: block; text-align: right; margin-top: 4px; }
-                            .modal-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 8px; }
-                            .modal-close { background: none; border: none; color: #aaa; font-size: 22px; cursor: pointer; line-height: 1; padding: 0; }
+                            .toast-msg { position: fixed; top: 70px; left: 50%; transform: translateX(-50%) translateY(-20px); background: rgba(220, 53, 69, 0.95); color: #fff; padding: 10px 20px; border-radius: 12px; font-weight: 700; font-size: 13px; z-index: 10000; box-shadow: 0 8px 30px rgba(0,0,0,0.6); pointer-events: none; opacity: 0; transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1); backdrop-filter: blur(8px); border: 1px solid rgba(255,255,255,0.2); text-align: center; }
+                            .toast-msg.show { opacity: 1; transform: translateX(-50%) translateY(0); }
                         </style>
                     </head>
                     <body>
-                        <div class="main-stream">
+                        <div id="toastMsg" class="toast-msg"></div>
+
+                        <div class="main-stream" id="streamContainer">
                             <video id="webrtcVideo" autoplay playsinline muted></video>
                             <img id="mainImg" style="display:none;" alt="Back Camera Fallback" />
+                            <canvas id="aiCanvas" style="position:absolute; inset:0; width:100%; height:100%; pointer-events:none; z-index:10;"></canvas>
                         </div>
 
                         <!-- PiP Overlays -->
@@ -361,6 +364,55 @@ class MjpegServer(port: Int, private val controller: CameraController) : NanoHTT
                                     <input type="checkbox" id="fastPhotoCheck" ${if (isFastPhoto) "checked" else ""} onchange="onFastPhotoToggle(this.checked)" style="width:18px;height:18px;cursor:pointer;">
                                 </div>
                                 <div style="font-size:10px;color:#4dabf7;text-align:right;margin-top:-4px;margin-bottom:8px;">🔍 $bestSensorLabel</div>
+
+                                <hr class="section-divider">
+                                <div class="section-label">🤖 KI-Erkennung &amp; Bewegungsalarm</div>
+                                <div class="setting-row" style="font-size:12px;">
+                                    <span>Status:</span>
+                                    <span id="aiBadgeStatus" style="font-weight:700;color:${if (AiMotionDetector.isEnabled) "#51cf66" else "#868e96"};">${if (AiMotionDetector.isEnabled) "🟢 ${AiMotionDetector.lastDetectionStatus}" else "⚪ Deaktiviert"}</span>
+                                </div>
+                                <div class="toggle-row">
+                                    <span>🤖 KI-Erkennung aktiv:</span>
+                                    <input type="checkbox" id="aiEnabledCheck" ${if (AiMotionDetector.isEnabled) "checked" else ""} onchange="onAiSettingChange()" style="width:18px;height:18px;cursor:pointer;">
+                                </div>
+                                <div class="setting-row">
+                                    <label>Ziel-Objekt:
+                                        <select id="aiTargetSelect" onchange="onAiSettingChange()">
+                                            <option value="person" ${if (AiMotionDetector.targetClass == "person") "selected" else ""}>Nur Personen</option>
+                                            <option value="person_animal" ${if (AiMotionDetector.targetClass == "person_animal") "selected" else ""}>Personen &amp; Tiere</option>
+                                            <option value="all" ${if (AiMotionDetector.targetClass == "all") "selected" else ""}>Alle Objekte</option>
+                                        </select>
+                                    </label>
+                                </div>
+                                <div class="setting-row">
+                                    <label>Sicherheit: <input type="range" id="aiConfSlider" min="30" max="90" step="5" value="${(AiMotionDetector.confidenceThreshold * 100).toInt()}" oninput="document.getElementById('aiConfVal').textContent=this.value+'%'" onchange="onAiSettingChange()"> <span class="val-badge" id="aiConfVal">${(AiMotionDetector.confidenceThreshold * 100).toInt()}%</span></label>
+                                </div>
+                                <div class="setting-row">
+                                    <label>Alarm-Pause:
+                                        <select id="aiCooldownSelect" onchange="onAiSettingChange()">
+                                            <option value="10" ${if (AiMotionDetector.cooldownSeconds == 10) "selected" else ""}>10 Sekunden</option>
+                                            <option value="30" ${if (AiMotionDetector.cooldownSeconds == 30) "selected" else ""}>30 Sekunden</option>
+                                            <option value="60" ${if (AiMotionDetector.cooldownSeconds == 60) "selected" else ""}>1 Minute</option>
+                                            <option value="120" ${if (AiMotionDetector.cooldownSeconds == 120) "selected" else ""}>2 Minuten</option>
+                                        </select>
+                                    </label>
+                                </div>
+                                <div class="toggle-row">
+                                    <span>🚨 Webhook-Alarm senden:</span>
+                                    <input type="checkbox" id="aiWebhookCheck" ${if (AiMotionDetector.isWebhookAlarmEnabled) "checked" else ""} onchange="onAiSettingChange()" style="width:18px;height:18px;cursor:pointer;">
+                                </div>
+                                <div class="toggle-row">
+                                    <span>🎥 Auto-Clip bei Alarm (10s):</span>
+                                    <input type="checkbox" id="aiAutoClipCheck" ${if (AiMotionDetector.isAutoClipEnabled) "checked" else ""} onchange="onAiSettingChange()" style="width:18px;height:18px;cursor:pointer;">
+                                </div>
+                                <div class="toggle-row">
+                                    <span>☁️ In Google Drive hochladen:</span>
+                                    <input type="checkbox" id="aiAutoDriveCheck" ${if (AiMotionDetector.isAutoDriveEnabled) "checked" else ""} onchange="onAiSettingChange()" style="width:18px;height:18px;cursor:pointer;">
+                                </div>
+                                <div style="margin-top:6px;margin-bottom:6px;">
+                                    <button onclick="sendTestAlarm()" style="width:100%;text-align:center;background:rgba(220,53,69,0.18);border:1px solid #dc3545;color:#ff6b6b;padding:7px 10px;border-radius:8px;font-size:12px;font-weight:600;cursor:pointer;">🚨 Test-Alarm an Webhook</button>
+                                </div>
+                                <div id="aiLastAlarmText" style="font-size:10px;color:#ffd43b;text-align:right;margin-top:2px;">${AiMotionDetector.lastAlarmLabel}</div>
 
                                 <hr class="section-divider">
                                 <div class="section-label">☁️ Google Drive Cloud</div>
@@ -835,6 +887,209 @@ class MjpegServer(port: Int, private val controller: CameraController) : NanoHTT
 
                             fetchDriveState();
                             setInterval(fetchDriveState, 8000);
+
+                            // --- On-Screen Toast Notification Helper ---
+                            let toastTimer = null;
+                            function showToast(text) {
+                                const toast = document.getElementById('toastMsg');
+                                if (!toast) return;
+                                toast.textContent = text;
+                                toast.classList.add('show');
+                                if (toastTimer) clearTimeout(toastTimer);
+                                toastTimer = setTimeout(() => {
+                                    toast.classList.remove('show');
+                                }, 3500);
+                            }
+
+                            // --- Real-Time AI Bounding Boxes & Auto-Clip Loop ---
+                            const aiCanvas = document.getElementById('aiCanvas');
+                            const aiCtx = aiCanvas ? aiCanvas.getContext('2d') : null;
+                            let currentAiBoxes = [];
+                            let lastAutoClipTriggerTime = 0;
+
+                            function drawAiOverlay() {
+                                if (!aiCanvas || !aiCtx) return;
+                                const rect = aiCanvas.getBoundingClientRect();
+                                if (aiCanvas.width !== Math.round(rect.width) || aiCanvas.height !== Math.round(rect.height)) {
+                                    aiCanvas.width = Math.round(rect.width);
+                                    aiCanvas.height = Math.round(rect.height);
+                                }
+                                aiCtx.clearRect(0, 0, aiCanvas.width, aiCanvas.height);
+
+                                if (!currentAiBoxes || currentAiBoxes.length === 0) return;
+
+                                const w = aiCanvas.width;
+                                const h = aiCanvas.height;
+
+                                currentAiBoxes.forEach(det => {
+                                    const x = det.left * w;
+                                    const y = det.top * h;
+                                    const bw = (det.right - det.left) * w;
+                                    const bh = (det.bottom - det.top) * h;
+
+                                    const isPerson = (det.label || '').toLowerCase() === 'person';
+                                    const color = isPerson ? '#00ff88' : '#ffd43b';
+                                    const fill = isPerson ? 'rgba(0, 255, 136, 0.12)' : 'rgba(255, 212, 59, 0.12)';
+
+                                    // Outer Box & Glow
+                                    aiCtx.save();
+                                    aiCtx.strokeStyle = color;
+                                    aiCtx.lineWidth = 2.5;
+                                    aiCtx.fillStyle = fill;
+                                    aiCtx.shadowColor = color;
+                                    aiCtx.shadowBlur = 8;
+
+                                    if (aiCtx.roundRect) {
+                                        aiCtx.beginPath();
+                                        aiCtx.roundRect(x, y, bw, bh, 6);
+                                        aiCtx.fill();
+                                        aiCtx.stroke();
+                                    } else {
+                                        aiCtx.fillRect(x, y, bw, bh);
+                                        aiCtx.strokeRect(x, y, bw, bh);
+                                    }
+                                    aiCtx.restore();
+
+                                    // Corner markers (MediaPipe Style)
+                                    const cLen = Math.min(18, bw / 3, bh / 3);
+                                    aiCtx.save();
+                                    aiCtx.strokeStyle = '#ffffff';
+                                    aiCtx.lineWidth = 3.5;
+                                    aiCtx.beginPath();
+                                    // Top-Left
+                                    aiCtx.moveTo(x, y + cLen); aiCtx.lineTo(x, y); aiCtx.lineTo(x + cLen, y);
+                                    // Top-Right
+                                    aiCtx.moveTo(x + bw - cLen, y); aiCtx.lineTo(x + bw, y); aiCtx.lineTo(x + bw, y + cLen);
+                                    // Bottom-Left
+                                    aiCtx.moveTo(x, y + bh - cLen); aiCtx.lineTo(x, y + bh); aiCtx.lineTo(x + cLen, y + bh);
+                                    // Bottom-Right
+                                    aiCtx.moveTo(x + bw - cLen, y + bh); aiCtx.lineTo(x + bw, y + bh); aiCtx.lineTo(x + bw, y + bh - cLen);
+                                    aiCtx.stroke();
+                                    aiCtx.restore();
+
+                                    // Label Tag Pill
+                                    const labelText = (isPerson ? '🚶 ' : '🎯 ') + det.label + ' ' + det.score + '%';
+                                    aiCtx.font = 'bold 12px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+                                    const textMetrics = aiCtx.measureText(labelText);
+                                    const pillW = textMetrics.width + 12;
+                                    const pillH = 22;
+                                    const pillY = Math.max(0, y - pillH - 4);
+
+                                    aiCtx.fillStyle = color;
+                                    if (aiCtx.roundRect) {
+                                        aiCtx.beginPath();
+                                        aiCtx.roundRect(x, pillY, pillW, pillH, 4);
+                                        aiCtx.fill();
+                                    } else {
+                                        aiCtx.fillRect(x, pillY, pillW, pillH);
+                                    }
+
+                                    aiCtx.fillStyle = '#000000';
+                                    aiCtx.fillText(labelText, x + 6, pillY + 15);
+                                });
+                            }
+
+                            async function pollAiBoxes() {
+                                try {
+                                    const res = await fetch('/ai_boxes');
+                                    if (res.ok) {
+                                        currentAiBoxes = await res.json();
+                                        drawAiOverlay();
+                                    }
+                                } catch(e) {}
+                            }
+                            setInterval(pollAiBoxes, 200);
+
+                            async function fetchAiState() {
+                                try {
+                                    const res = await fetch('/ai_state');
+                                    if (!res.ok) return;
+                                    const data = await res.json();
+
+                                    const badge = document.getElementById('aiBadgeStatus');
+                                    if (badge) {
+                                        badge.textContent = data.enabled ? ('🟢 ' + data.status) : '⚪ Deaktiviert';
+                                        badge.style.color = data.enabled ? '#51cf66' : '#868e96';
+                                    }
+                                    const check = document.getElementById('aiEnabledCheck');
+                                    if (check && document.activeElement !== check) check.checked = data.enabled;
+
+                                    const confVal = document.getElementById('aiConfVal');
+                                    const confSlider = document.getElementById('aiConfSlider');
+                                    if (confVal) confVal.textContent = data.confidence + '%';
+                                    if (confSlider && document.activeElement !== confSlider) confSlider.value = data.confidence;
+
+                                    const targetSelect = document.getElementById('aiTargetSelect');
+                                    if (targetSelect && document.activeElement !== targetSelect && data.targetClass) targetSelect.value = data.targetClass;
+
+                                    const cooldownSelect = document.getElementById('aiCooldownSelect');
+                                    if (cooldownSelect && document.activeElement !== cooldownSelect && data.cooldown) cooldownSelect.value = '' + data.cooldown;
+
+                                    const webhookCheck = document.getElementById('aiWebhookCheck');
+                                    if (webhookCheck && document.activeElement !== webhookCheck) webhookCheck.checked = data.webhookAlarm;
+
+                                    const autoClipCheck = document.getElementById('aiAutoClipCheck');
+                                    if (autoClipCheck && document.activeElement !== autoClipCheck) autoClipCheck.checked = data.autoClip;
+
+                                    const autoDriveCheck = document.getElementById('aiAutoDriveCheck');
+                                    if (autoDriveCheck && document.activeElement !== autoDriveCheck) autoDriveCheck.checked = data.autoDrive;
+
+                                    const lastAlarm = document.getElementById('aiLastAlarmText');
+                                    if (lastAlarm && data.lastAlarm) lastAlarm.textContent = data.lastAlarm;
+
+                                    // Automatic 10s Clip trigger on AI Alarm
+                                    if (data.enabled && data.autoClip && data.pendingClipTrigger && data.pendingClipTrigger > lastAutoClipTriggerTime) {
+                                        const isFresh = (Date.now() - data.pendingClipTrigger) < 10000;
+                                        if (lastAutoClipTriggerTime > 0 && isFresh && !isRecordingClip) {
+                                            lastAutoClipTriggerTime = data.pendingClipTrigger;
+                                            console.log('🚨 Auto-Clip triggered by AI Alarm!');
+                                            showToast('🚨 KI-Alarm: ' + data.lastAlarm + ' → 10s Auto-Clip gestartet!');
+                                            recordClip(10);
+                                        } else {
+                                            lastAutoClipTriggerTime = data.pendingClipTrigger;
+                                        }
+                                    }
+                                } catch(e) {}
+                            }
+                            fetchAiState();
+                            setInterval(fetchAiState, 3000);
+
+                            async function onAiSettingChange() {
+                                const enabled = document.getElementById('aiEnabledCheck')?.checked ?? true;
+                                const targetClass = document.getElementById('aiTargetSelect')?.value ?? 'person';
+                                const confidence = document.getElementById('aiConfSlider')?.value ?? 50;
+                                const cooldown = document.getElementById('aiCooldownSelect')?.value ?? 30;
+                                const webhookAlarm = document.getElementById('aiWebhookCheck')?.checked ?? true;
+                                const autoClip = document.getElementById('aiAutoClipCheck')?.checked ?? true;
+                                const autoDrive = document.getElementById('aiAutoDriveCheck')?.checked ?? true;
+
+                                try {
+                                    const params = new URLSearchParams({
+                                        enabled: enabled,
+                                        targetClass: targetClass,
+                                        confidence: confidence,
+                                        cooldown: cooldown,
+                                        webhookAlarm: webhookAlarm,
+                                        autoClip: autoClip,
+                                        autoDrive: autoDrive
+                                    });
+                                    await fetch('/ai_state', { method: 'POST', body: params });
+                                    fetchAiState();
+                                } catch(e) {}
+                            }
+
+                            async function sendTestAlarm() {
+                                try {
+                                    const res = await fetch('/test_alarm', { method: 'POST' });
+                                    if (res.ok) {
+                                        showToast('✓ Test-Alarm an Webhook gesendet!');
+                                    } else {
+                                        showToast('❌ Fehler beim Senden des Test-Alarms');
+                                    }
+                                } catch(e) {
+                                    showToast('❌ Verbindungsfehler');
+                                }
+                            }
 
                             // --- Rotate Stream ---
                             function rotateStream() {
@@ -1753,6 +2008,56 @@ class MjpegServer(port: Int, private val controller: CameraController) : NanoHTT
                 res.addHeader("Access-Control-Allow-Origin", "*")
                 res.addHeader("Cache-Control", "no-cache, no-store, must-revalidate")
                 return res
+            }
+            "/ai_state" -> {
+                if (session.method == Method.POST) {
+                    session.parms["enabled"]?.toBooleanStrictOrNull()?.let {
+                        AiMotionDetector.isEnabled = it
+                    }
+                    session.parms["confidence"]?.toFloatOrNull()?.let {
+                        AiMotionDetector.confidenceThreshold = (it / 100f).coerceIn(0.2f, 0.95f)
+                    }
+                    session.parms["targetClass"]?.let {
+                        if (it.isNotBlank()) AiMotionDetector.targetClass = it
+                    }
+                    session.parms["cooldown"]?.toIntOrNull()?.let {
+                        AiMotionDetector.cooldownSeconds = it.coerceIn(5, 600)
+                    }
+                    session.parms["webhookAlarm"]?.toBooleanStrictOrNull()?.let {
+                        AiMotionDetector.isWebhookAlarmEnabled = it
+                    }
+                    session.parms["autoClip"]?.toBooleanStrictOrNull()?.let {
+                        AiMotionDetector.isAutoClipEnabled = it
+                    }
+                    session.parms["autoDrive"]?.toBooleanStrictOrNull()?.let {
+                        AiMotionDetector.isAutoDriveEnabled = it
+                    }
+                    service?.let { AiMotionDetector.save(it) }
+                }
+                val res = newFixedLengthResponse(Response.Status.OK, "application/json", AiMotionDetector.getAiStateJson())
+                res.addHeader("Access-Control-Allow-Origin", "*")
+                res.addHeader("Cache-Control", "no-cache, no-store, must-revalidate")
+                return res
+            }
+            "/ai_boxes" -> {
+                val res = newFixedLengthResponse(Response.Status.OK, "application/json", AiMotionDetector.getBoxesJson())
+                res.addHeader("Access-Control-Allow-Origin", "*")
+                res.addHeader("Cache-Control", "no-cache, no-store, must-revalidate")
+                return res
+            }
+            "/test_alarm" -> {
+                if (session.method == Method.POST) {
+                    var resultMsg = "Test-Alarm gesendet"
+                    var isSuccess = true
+                    WebhookManager.sendAlarm("🚨 Test-Alarm aus dem Web-Interface!") { success, msg ->
+                        isSuccess = success
+                        resultMsg = msg
+                    }
+                    val json = "{\"success\":$isSuccess,\"message\":\"$resultMsg\"}"
+                    val res = newFixedLengthResponse(Response.Status.OK, "application/json", json)
+                    res.addHeader("Access-Control-Allow-Origin", "*")
+                    return res
+                }
             }
             "/upload_clip" -> {
                 if (session.method == Method.POST) {

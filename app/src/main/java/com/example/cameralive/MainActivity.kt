@@ -431,8 +431,16 @@ fun AutomationConfigDialog(
     var clipEnabled by remember(GoogleDriveBackupManager.isClipBackupEnabled) { mutableStateOf(GoogleDriveBackupManager.isClipBackupEnabled) }
     val connectedAccount = GoogleDriveBackupManager.connectedAccountEmail
 
+    var aiEnabled by remember { mutableStateOf(AiMotionDetector.isEnabled) }
+    var aiConfidence by remember { mutableFloatStateOf(AiMotionDetector.confidenceThreshold) }
+    var aiTargetClass by remember { mutableStateOf(AiMotionDetector.targetClass) }
+    var aiCooldown by remember { mutableIntStateOf(AiMotionDetector.cooldownSeconds) }
+    var aiWebhookAlarm by remember { mutableStateOf(AiMotionDetector.isWebhookAlarmEnabled) }
+    var aiAutoClip by remember { mutableStateOf(AiMotionDetector.isAutoClipEnabled) }
+    var aiAutoDrive by remember { mutableStateOf(AiMotionDetector.isAutoDriveEnabled) }
+
     var selectedTab by remember { mutableStateOf(0) }
-    val tabs = listOf("🔌 Smart-Plug", "🚨 Alarm", "☁️ Google Drive")
+    val tabs = listOf("🤖 KI-Alarm", "🔌 Akku-Schutz", "🚨 Webhook", "☁️ Drive")
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -462,7 +470,114 @@ fun AutomationConfigDialog(
                 Spacer(modifier = Modifier.height(16.dp))
 
                 when (selectedTab) {
-                    0 -> { // Smart Plug
+                    0 -> { // AI & Motion Alarm
+                        Text(
+                            text = "🤖 KI-Objekterkennung & Alarm",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = androidx.compose.ui.text.font.FontWeight.Bold
+                        )
+                        Text(
+                            text = "Erkennt Personen & Objekte lokal auf dem Smartphone (MediaPipe EfficientDet-Lite0). Sendet Webhooks & sichert Aufnahmen automatisch.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Spacer(modifier = Modifier.height(12.dp))
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text("KI-Erkennung aktivieren:", style = MaterialTheme.typography.bodyMedium)
+                            Switch(checked = aiEnabled, onCheckedChange = { aiEnabled = it })
+                        }
+
+                        Spacer(modifier = Modifier.height(8.dp))
+
+                        Text("🎯 Ziel-Objekte:", style = MaterialTheme.typography.labelMedium)
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            FilterChip(
+                                selected = aiTargetClass == "person",
+                                onClick = { aiTargetClass = "person" },
+                                label = { Text("🚶 Personen") }
+                            )
+                            FilterChip(
+                                selected = aiTargetClass == "person_animal",
+                                onClick = { aiTargetClass = "person_animal" },
+                                label = { Text("🐾 + Tiere") }
+                            )
+                            FilterChip(
+                                selected = aiTargetClass == "all",
+                                onClick = { aiTargetClass = "all" },
+                                label = { Text("🌐 Alle") }
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.height(8.dp))
+
+                        Text("🎯 Mindest-Sicherheit: ${(aiConfidence * 100).toInt()}%", style = MaterialTheme.typography.bodySmall)
+                        Slider(
+                            value = aiConfidence,
+                            onValueChange = { aiConfidence = it },
+                            valueRange = 0.30f..0.90f,
+                            steps = 11
+                        )
+
+                        Spacer(modifier = Modifier.height(4.dp))
+
+                        Text("⏱️ Alarm-Pause (Cooldown): ${aiCooldown}s", style = MaterialTheme.typography.bodySmall)
+                        Slider(
+                            value = aiCooldown.toFloat(),
+                            onValueChange = { aiCooldown = it.toInt() },
+                            valueRange = 10f..120f,
+                            steps = 10
+                        )
+
+                        Spacer(modifier = Modifier.height(8.dp))
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text("🚨 Webhook-Alarm senden:", style = MaterialTheme.typography.bodySmall)
+                            Switch(checked = aiWebhookAlarm, onCheckedChange = { aiWebhookAlarm = it })
+                        }
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text("🎥 Auto-Clip aufnehmen (10s):", style = MaterialTheme.typography.bodySmall)
+                            Switch(checked = aiAutoClip, onCheckedChange = { aiAutoClip = it })
+                        }
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text("☁️ In Google Drive sichern:", style = MaterialTheme.typography.bodySmall)
+                            Switch(checked = aiAutoDrive, onCheckedChange = { aiAutoDrive = it })
+                        }
+
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Text(
+                            text = "Status: ${AiMotionDetector.lastDetectionStatus}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        Text(
+                            text = "Letzter Alarm: ${AiMotionDetector.lastAlarmLabel}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    1 -> { // Smart Plug
                         Text(
                             text = "24/7 Dauerbetrieb & Akkuschutz",
                             style = MaterialTheme.typography.titleMedium,
@@ -537,7 +652,7 @@ fun AutomationConfigDialog(
                             )
                         }
                     }
-                    1 -> { // Alarm Webhooks
+                    2 -> { // Alarm Webhooks
                         Text(
                             text = "Alarm & Ereignis-Benachrichtigungen",
                             style = MaterialTheme.typography.titleMedium,
@@ -584,7 +699,7 @@ fun AutomationConfigDialog(
                             }
                         }
                     }
-                    2 -> { // Google Drive
+                    3 -> { // Google Drive
                         Text(
                             text = "Google Drive Auto-Backup",
                             style = MaterialTheme.typography.titleMedium,
@@ -678,6 +793,15 @@ fun AutomationConfigDialog(
         },
         confirmButton = {
             Button(onClick = {
+                AiMotionDetector.isEnabled = aiEnabled
+                AiMotionDetector.confidenceThreshold = aiConfidence
+                AiMotionDetector.targetClass = aiTargetClass
+                AiMotionDetector.cooldownSeconds = aiCooldown
+                AiMotionDetector.isWebhookAlarmEnabled = aiWebhookAlarm
+                AiMotionDetector.isAutoClipEnabled = aiAutoClip
+                AiMotionDetector.isAutoDriveEnabled = aiAutoDrive
+                AiMotionDetector.save(context)
+
                 WebhookManager.batteryProtectionEnabled = batteryProtection
                 WebhookManager.plugOffUrl = plugOffUrl
                 WebhookManager.plugOnUrl = plugOnUrl

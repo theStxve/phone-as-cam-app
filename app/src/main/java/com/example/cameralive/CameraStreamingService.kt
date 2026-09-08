@@ -94,6 +94,7 @@ class CameraStreamingService : LifecycleService(), CameraController, LocationLis
     @Volatile private var lastBackFrameTime = 0L
     @Volatile private var lastFrontFrameTime = 0L
     @Volatile private var lastSnapshotTime = 0L
+    @Volatile private var lastAiAnalysisTime = 0L
 
     var webRtcManager: WebRtcManager? = null
     @Volatile private var cameraRetryPending = false
@@ -144,6 +145,7 @@ class CameraStreamingService : LifecycleService(), CameraController, LocationLis
         // Android 14 requires this before any slow operations like WebRTC init.
         WebhookManager.init(this)
         GoogleDriveBackupManager.init(this)
+        AiMotionDetector.init(this)
         try {
             registerReceiver(batteryReceiver, android.content.IntentFilter(Intent.ACTION_BATTERY_CHANGED))
         } catch (e: Exception) {
@@ -880,15 +882,15 @@ class CameraStreamingService : LifecycleService(), CameraController, LocationLis
     
     private fun processImage(imageProxy: androidx.camera.core.ImageProxy, isFront: Boolean) {
         try {
-            // ZERO-CLIENT IDLE CHECK: If no viewer is watching, drop frame immediately to save CPU and battery
+            // Drop frame immediately only if no viewer is watching AND AI detection is off
+            val isFrontViewerActive = isFrontCameraEnabled.get() && mjpegServer?.hasActiveFrontClients() == true
+            val isBackViewerActive = mjpegServer?.hasActiveClients() == true
+            val isAiActive = AiMotionDetector.isEnabled && !isFront
+
             if (isFront) {
-                if (!isFrontCameraEnabled.get() || mjpegServer?.hasActiveFrontClients() != true) {
-                    return
-                }
+                if (!isFrontViewerActive) return
             } else {
-                if (mjpegServer?.hasActiveClients() != true) {
-                    return
-                }
+                if (!isBackViewerActive && !isAiActive) return
             }
 
             val width = imageProxy.width
@@ -1038,10 +1040,62 @@ class CameraStreamingService : LifecycleService(), CameraController, LocationLis
                     }
                 }
             }
+
+            // AI Object Detection analysis (~350ms interval to be gentle on CPU & battery)
+            if (!isFront && AiMotionDetector.isEnabled) {
+                val now = System.currentTimeMillis()
+                if (now - lastAiAnalysisTime >= 350L) {
+                    lastAiAnalysisTime = now
+                    val aiNv21 = nv21.clone()
+                    val baseRotation = imageProxy.imageInfo.rotationDegrees
+                    val targetRotation = if (currentLensFacing == CameraSelector.LENS_FACING_FRONT) {
+                        (baseRotation + 90) % 360
+                    } else {
+                        (baseRotation + 270) % 360
+                    }
+                    cameraExecutor.submit {
+                        try {
+                            val yuvImage = YuvImage(aiNv21, ImageFormat.NV21, width, height, null)
+                            val rawOut = ByteArrayOutputStream()
+                            yuvImage.compressToJpeg(Rect(0, 0, width, height), 60, rawOut)
+                            val rawBytes = rawOut.toByteArray()
+                            val bmp = BitmapFactory.decodeByteArray(rawBytes, 0, rawBytes.size)
+                            if (bmp != null) {
+                                val finalBmp = if (targetRotation != 0) {
+                                    val matrix = Matrix().apply { postRotate(targetRotation.toFloat()) }
+                                    val rotated = Bitmap.createBitmap(bmp, 0, 0, bmp.width, bmp.height, matrix, true)
+                                    if (rotated != bmp) bmp.recycle()
+                                    rotated
+                                } else {
+                                    bmp
+                                }
+                                AiMotionDetector.analyzeBitmap(finalBmp, this@CameraStreamingService)
+                            }
+                        } catch (e: Exception) {
+                            Log.e(TAG, "AI frame processing error", e)
+                        }
+                    }
+                }
+            }
         } catch (e: Exception) {
             Log.e(TAG, "Error processing image", e)
         } finally {
             imageProxy.close()
+        }
+    }
+
+    fun triggerAlarmSnapshotUpload() {
+        cameraExecutor.submit {
+            try {
+                Log.i(TAG, "Triggering AI Alarm high-res snapshot & Drive upload...")
+                val photo = takeHighQualityPhoto()
+                if (photo != null && photo.isNotEmpty()) {
+                    GoogleDriveBackupManager.uploadPhotoAsync(this, photo)
+                    Log.i(TAG, "AI Alarm snapshot sent to Google Drive upload queue (${photo.size / 1024} KB)")
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Error in AI alarm snapshot upload", e)
+            }
         }
     }
 

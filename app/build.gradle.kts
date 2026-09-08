@@ -38,6 +38,9 @@ android {
         excludes += "/META-INF/{AL2.0,LGPL2.1}"
       }
     }
+    androidResources {
+      noCompress += "tflite"
+    }
 }
 
 kotlin {
@@ -98,4 +101,7 @@ dependencies {
 
   // Google Sign-In & Drive Auth
   implementation(libs.play.services.auth)
+
+  // MediaPipe AI Object Detection
+  implementation(libs.mediapipe.tasks.vision)
 }
