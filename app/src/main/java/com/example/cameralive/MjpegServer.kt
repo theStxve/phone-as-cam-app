@@ -145,94 +145,127 @@ class MjpegServer(port: Int, private val controller: CameraController) : NanoHTT
                     <html>
                     <head>
                         <title>Camera Live Stream</title>
-                        <meta name="viewport" content="width=device-width, initial-scale=1">
+                        <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
                         <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin=""/>
                         <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
                         <style>
-                            * { box-sizing: border-box; }
-                            body { margin: 0; padding: 0; background: #000; color: white; font-family: sans-serif; overflow: hidden; height: 100vh; width: 100vw; }
-                            
-                            .main-stream { position: absolute; top: 0; left: 0; width: 100%; height: 100%; display: flex; justify-content: center; align-items: center; }
-                            .main-stream video, .main-stream img { width: 100%; height: 100%; object-fit: contain; }
-                            
-                            .overlay { position: absolute; border: 2px solid rgba(255,255,255,0.4); border-radius: 8px; overflow: hidden; box-shadow: 0 4px 15px rgba(0,0,0,0.5); z-index: 100; background: #222; }
-                            .overlay-label { position: absolute; top: 5px; left: 5px; background: rgba(0,0,0,0.6); padding: 2px 8px; border-radius: 4px; font-size: 12px; font-weight: bold; z-index: 101; }
-                            .btn-pip-close { position: absolute; top: 4px; right: 4px; z-index: 102; background: rgba(0,0,0,0.65); color: #fff; border: 1px solid rgba(255,255,255,0.3); border-radius: 4px; width: 22px; height: 22px; padding: 0; display: flex; align-items: center; justify-content: center; font-size: 11px; cursor: pointer; opacity: 0.85; transition: all 0.2s; }
-                            .btn-pip-close:hover { opacity: 1; background: #dc3545; border-color: #dc3545; }
-                            
-                            .selfie-pip { bottom: 15px; right: 15px; width: 240px; height: 180px; }
-                            .selfie-pip img { width: 100%; height: 100%; object-fit: cover; }
-                            
-                            .map-pip { bottom: 15px; left: 15px; width: 280px; height: 200px; }
-                            #map { width: 100%; height: 100%; }
-                            
-                            .controls { position: absolute; top: 15px; right: 15px; display: flex; gap: 8px; z-index: 200; }
-                            button { padding: 10px 16px; font-size: 13px; font-weight: bold; border: none; border-radius: 8px; cursor: pointer; color: white; opacity: 0.9; transition: all 0.2s; }
-                            button:hover { opacity: 1; transform: scale(1.04); }
-                            .btn-flash { background: #007bff; }
-                            .btn-flash.active { background: #ffc107; color: #000; box-shadow: 0 0 10px rgba(255, 193, 7, 0.7); }
-                            .btn-zoom { background: #6f42c1; }
-                            .btn-zoom.active { background: #9d4edd; box-shadow: 0 0 10px rgba(157, 78, 221, 0.7); }
-                            .btn-switch { background: #0d6efd; }
-                            .btn-rotate { background: #17a2b8; }
-                            .btn-selfie { background: #495057; }
-                            .btn-selfie.active { background: #e8590c; box-shadow: 0 0 10px rgba(232, 89, 12, 0.6); }
-                            .btn-map { background: #087f5b; }
-                            .btn-map.active { background: #12b886; box-shadow: 0 0 10px rgba(18, 184, 134, 0.6); }
-                            .btn-audio { background: #28a745; }
-                            .btn-audio.muted { background: #6c757d; }
-                            .btn-photo { background: #198754; }
-                            .btn-photo:active { background: #146c43; }
-                            .btn-megafon { background: #d63384; }
-                            .btn-megafon.active { background: #dc3545; box-shadow: 0 0 12px #dc3545; animation: megaPulse 1.2s infinite; }
-                            @keyframes megaPulse { 0% { transform: scale(1); } 50% { transform: scale(1.08); } 100% { transform: scale(1); } }
-                            
-                            .top-bar-left { position: absolute; top: 15px; left: 15px; z-index: 200; display: flex; gap: 8px; flex-wrap: wrap; }
-                            .status-badge { background: rgba(0,0,0,0.75); padding: 8px 14px; border-radius: 20px; font-size: 13px; font-weight: bold; display: flex; align-items: center; gap: 8px; backdrop-filter: blur(4px); border: 1px solid rgba(255,255,255,0.15); }
-                            .viewer-badge { background: rgba(0,0,0,0.75); padding: 8px 14px; border-radius: 20px; font-size: 13px; font-weight: bold; display: flex; align-items: center; gap: 6px; backdrop-filter: blur(4px); border: 1px solid rgba(255,255,255,0.15); color: #fff; }
-                            .dot { width: 10px; height: 10px; border-radius: 50%; background: #ffc107; display: inline-block; }
-                            .dot.live { background: #28a745; box-shadow: 0 0 8px #28a745; }
-                            
-                            .settings { position: absolute; top: 60px; left: 15px; z-index: 200; background: rgba(0,0,0,0.8); padding: 12px 14px; border-radius: 10px; font-size: 12px; backdrop-filter: blur(6px); max-width: 250px; border: 1px solid rgba(255,255,255,0.15); box-shadow: 0 4px 15px rgba(0,0,0,0.5); }
-                            .settings label { display: flex; justify-content: space-between; align-items: center; margin-bottom: 7px; }
-                            .settings input[type=range] { width: 110px; vertical-align: middle; }
-                            .settings select { background: #222; color: #fff; border: 1px solid rgba(255,255,255,0.3); border-radius: 4px; padding: 3px 6px; font-size: 11px; }
-                            @keyframes megaPulse { 0%,100% { transform: scale(1); } 50% { transform: scale(1.07); } }
-                            .btn-settings { background: rgba(255,255,255,0.12); border: 1px solid rgba(255,255,255,0.2) !important; }
-                            .btn-settings.open { background: rgba(255,255,255,0.22); }
+                            * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+                            html, body { margin: 0; padding: 0; background: #000; color: white; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; height: 100%; width: 100%; overflow: hidden; }
 
-                            /* ── SETTINGS DRAWER (slides up from bottom) ── */
-                            .settings-overlay { position: fixed; inset: 0; z-index: 400; background: rgba(0,0,0,0.5); display: none; }
-                            .settings-overlay.open { display: block; }
-                            .settings-drawer { position: fixed; bottom: 0; left: 0; right: 0; z-index: 500; background: #12121a; border-radius: 18px 18px 0 0; border-top: 1px solid rgba(255,255,255,0.12); max-height: 82vh; display: flex; flex-direction: column; transform: translateY(100%); transition: transform 0.3s cubic-bezier(0.4,0,0.2,1); }
-                            .settings-drawer.open { transform: translateY(0); }
-                            .drawer-handle { width: 40px; height: 4px; background: rgba(255,255,255,0.25); border-radius: 2px; margin: 10px auto 4px; flex-shrink: 0; }
-                            .drawer-title { text-align: center; font-size: 13px; font-weight: bold; color: #aaa; padding: 4px 0 10px; flex-shrink: 0; letter-spacing: 0.5px; text-transform: uppercase; }
-                            .drawer-body { overflow-y: auto; -webkit-overflow-scrolling: touch; padding: 0 16px 20px; }
+                            /* ── STREAM LAYER ── */
+                            .main-stream { position: fixed; inset: 0; display: flex; justify-content: center; align-items: center; background: #000; }
+                            .main-stream video, .main-stream img { width: 100%; height: 100%; object-fit: contain; }
+
+                            /* ── TOP-LEFT STATUS BADGES ── */
+                            .top-bar { position: fixed; top: 15px; left: 15px; z-index: 200; display: flex; align-items: center; gap: 8px; pointer-events: none; }
+                            .top-bar > * { pointer-events: auto; }
+                            .status-badge { background: rgba(15,15,22,0.85); padding: 7px 14px; border-radius: 20px; font-size: 13px; font-weight: 600; display: flex; align-items: center; gap: 8px; backdrop-filter: blur(10px); border: 1px solid rgba(255,255,255,0.15); box-shadow: 0 4px 15px rgba(0,0,0,0.4); white-space: nowrap; }
+                            .viewer-badge { background: rgba(15,15,22,0.85); padding: 7px 14px; border-radius: 20px; font-size: 13px; font-weight: 600; display: flex; align-items: center; gap: 6px; backdrop-filter: blur(10px); border: 1px solid rgba(255,255,255,0.15); box-shadow: 0 4px 15px rgba(0,0,0,0.4); white-space: nowrap; }
+                            .dot { width: 9px; height: 9px; border-radius: 50%; background: #ffc107; display: inline-block; flex-shrink: 0; }
+                            .dot.live { background: #28a745; box-shadow: 0 0 10px #28a745; }
+
+                            /* ── CONTROL BUTTONS COMMON STYLES ── */
+                            .controls-bar button { padding: 9px 14px; font-size: 13px; font-weight: 600; border: none; border-radius: 10px; cursor: pointer; color: white; opacity: 0.92; transition: all 0.15s ease-out; display: inline-flex; align-items: center; justify-content: center; gap: 6px; white-space: nowrap; user-select: none; }
+                            .controls-bar button:hover { opacity: 1; transform: translateY(-1px); filter: brightness(1.1); }
+                            .controls-bar button:active { transform: scale(0.96); }
+                            
+                            .btn-photo   { background: #198754; }
+                            .btn-audio   { background: #28a745; }
+                            .btn-audio.muted { background: #495057; }
+                            .btn-megafon { background: #c2255c; }
+                            .btn-megafon.active { background: #dc3545; box-shadow: 0 0 14px #dc3545; animation: megaPulse 1.2s infinite; }
+                            @keyframes megaPulse { 0%,100% { transform: scale(1); } 50% { transform: scale(1.06); } }
+                            .btn-flash   { background: #1971c2; }
+                            .btn-flash.active { background: #fcc419; color: #000; box-shadow: 0 0 12px rgba(252,196,25,0.7); }
+                            .btn-zoom    { background: #6f42c1; }
+                            .btn-zoom.active { background: #9d4edd; box-shadow: 0 0 12px rgba(157,78,221,0.7); }
+                            .btn-switch  { background: #1864ab; }
+                            .btn-rotate  { background: #0b7285; }
+                            .btn-selfie  { background: #495057; }
+                            .btn-selfie.active { background: #e8590c; box-shadow: 0 0 12px rgba(232,89,12,0.7); }
+                            .btn-map     { background: #087f5b; }
+                            .btn-map.active { background: #12b886; box-shadow: 0 0 12px rgba(18,184,134,0.7); }
+                            .btn-settings { background: rgba(255,255,255,0.12); border: 1px solid rgba(255,255,255,0.2) !important; }
+                            .btn-settings.open { background: #3b5bdb; border-color: #3b5bdb !important; }
+
+                            /* ── PiP OVERLAYS COMMON ── */
+                            .overlay { position: fixed; border: 2px solid rgba(255,255,255,0.3); border-radius: 10px; overflow: hidden; box-shadow: 0 8px 24px rgba(0,0,0,0.6); z-index: 100; background: #16161e; }
+                            .overlay-label { position: absolute; top: 6px; left: 6px; background: rgba(0,0,0,0.7); padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 700; z-index: 101; backdrop-filter: blur(4px); }
+                            .btn-pip-close { position: absolute; top: 5px; right: 5px; z-index: 102; background: rgba(0,0,0,0.7); color: #fff; border: 1px solid rgba(255,255,255,0.25); border-radius: 4px; width: 24px; height: 24px; padding: 0; display: flex; align-items: center; justify-content: center; font-size: 12px; cursor: pointer; transition: all 0.15s; }
+                            .btn-pip-close:hover { background: #e03131; border-color: #e03131; }
+
+                            /* ── DESKTOP LAYOUT (>= 768px) ── */
+                            @media (min-width: 768px) {
+                                .controls-bar { position: fixed; top: 15px; right: 15px; z-index: 200; display: flex; align-items: center; gap: 8px; background: rgba(15,15,22,0.85); backdrop-filter: blur(12px); padding: 8px 12px; border-radius: 14px; border: 1px solid rgba(255,255,255,0.15); box-shadow: 0 6px 25px rgba(0,0,0,0.5); }
+                                .controls-bar button { padding: 9px 13px; font-size: 13px; }
+                                
+                                /* Settings panel as floating glassmorphic sidebar card */
+                                .settings-overlay { display: none !important; }
+                                .settings-drawer { position: fixed; top: 65px; left: 15px; z-index: 250; width: 330px; max-height: calc(100vh - 85px); background: rgba(15,15,22,0.92); backdrop-filter: blur(16px); border-radius: 14px; border: 1px solid rgba(255,255,255,0.15); box-shadow: 0 10px 35px rgba(0,0,0,0.6); display: flex; flex-direction: column; opacity: 0; pointer-events: none; transform: translateY(-8px); transition: opacity 0.2s ease, transform 0.2s ease; }
+                                .settings-drawer.open { opacity: 1; pointer-events: auto; transform: translateY(0); }
+                                .drawer-handle { display: none; }
+                                .drawer-header { display: flex; justify-content: space-between; align-items: center; padding: 12px 16px 8px; border-bottom: 1px solid rgba(255,255,255,0.1); }
+                                .drawer-title { font-size: 13px; font-weight: 700; color: #adb5bd; letter-spacing: 0.5px; text-transform: uppercase; margin: 0; }
+                                .btn-drawer-close { background: none; border: none; color: #868e96; font-size: 18px; cursor: pointer; padding: 0 4px; line-height: 1; }
+                                .btn-drawer-close:hover { color: #fff; }
+
+                                .selfie-pip { bottom: 20px; right: 20px; width: 260px; height: 195px; }
+                                .selfie-pip img { width: 100%; height: 100%; object-fit: cover; }
+                                .map-pip { bottom: 20px; left: 20px; width: 320px; height: 230px; }
+                                #map { width: 100%; height: 100%; }
+
+                                #braveHelpModal { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.75); z-index: 9999; justify-content: center; align-items: center; backdrop-filter: blur(8px); }
+                                .modal-card { background: #161622; border: 1px solid #ff922b; border-radius: 16px; width: 520px; max-width: 90%; padding: 22px; color: #fff; box-shadow: 0 16px 40px rgba(0,0,0,0.7); max-height: 85vh; overflow-y: auto; }
+                            }
+
+                            /* ── MOBILE LAYOUT (< 768px) ── */
+                            @media (max-width: 767px) {
+                                .controls-bar { position: fixed; bottom: 0; left: 0; right: 0; z-index: 300; background: rgba(12,12,18,0.94); backdrop-filter: blur(14px); border-top: 1px solid rgba(255,255,255,0.12); display: flex; align-items: center; padding: 8px 6px; gap: 6px; overflow-x: auto; overflow-y: hidden; -webkit-overflow-scrolling: touch; }
+                                .controls-bar::-webkit-scrollbar { display: none; }
+                                .controls-bar button { flex-shrink: 0; padding: 10px 12px; font-size: 13px; min-width: 52px; border-radius: 10px; }
+                                
+                                .btn-label-desktop { display: none; }
+
+                                .settings-overlay { position: fixed; inset: 0; z-index: 400; background: rgba(0,0,0,0.6); backdrop-filter: blur(4px); display: none; }
+                                .settings-overlay.open { display: block; }
+                                .settings-drawer { position: fixed; bottom: 0; left: 0; right: 0; z-index: 500; background: #14141e; border-radius: 20px 20px 0 0; border-top: 1px solid rgba(255,255,255,0.15); max-height: 80vh; display: flex; flex-direction: column; transform: translateY(100%); transition: transform 0.28s cubic-bezier(0.32,1,0.23,1); box-shadow: 0 -8px 30px rgba(0,0,0,0.7); }
+                                .settings-drawer.open { transform: translateY(0); }
+                                .drawer-handle { width: 38px; height: 4px; background: rgba(255,255,255,0.3); border-radius: 2px; margin: 10px auto 4px; flex-shrink: 0; }
+                                .drawer-header { display: flex; justify-content: space-between; align-items: center; padding: 4px 16px 10px; border-bottom: 1px solid rgba(255,255,255,0.08); }
+                                .drawer-title { font-size: 13px; font-weight: 700; color: #adb5bd; letter-spacing: 0.5px; text-transform: uppercase; margin: 0; }
+                                .btn-drawer-close { background: none; border: none; color: #868e96; font-size: 20px; cursor: pointer; padding: 0 4px; line-height: 1; }
+
+                                .selfie-pip { bottom: 72px; right: 10px; width: 120px; height: 90px; }
+                                .selfie-pip img { width: 100%; height: 100%; object-fit: cover; }
+                                .map-pip { bottom: 72px; left: 10px; width: 210px; height: 155px; }
+                                #map { width: 100%; height: 100%; }
+
+                                #braveHelpModal { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.85); z-index: 9999; justify-content: center; align-items: flex-end; backdrop-filter: blur(8px); }
+                                .modal-card { background: #161622; border: 1px solid #ff922b; border-radius: 18px 18px 0 0; width: 100%; padding: 20px; color: #fff; max-height: 82vh; overflow-y: auto; }
+                            }
+
+                            /* ── DRAWER CONTENT STYLING ── */
+                            .drawer-body { overflow-y: auto; -webkit-overflow-scrolling: touch; padding: 12px 16px 20px; }
                             .drawer-body::-webkit-scrollbar { width: 4px; }
                             .drawer-body::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.2); border-radius: 2px; }
-
-                            /* ── DRAWER SECTIONS ── */
-                            .section-label { font-size: 10px; font-weight: bold; color: #868e96; text-transform: uppercase; letter-spacing: 0.8px; margin: 14px 0 8px; }
-                            .section-divider { border: none; border-top: 1px solid rgba(255,255,255,0.1); margin: 10px 0; }
-                            .setting-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; font-size: 13px; gap: 10px; }
-                            .setting-row label { display: flex; justify-content: space-between; align-items: center; width: 100%; gap: 8px; }
-                            .setting-row input[type=range] { flex: 1; min-width: 0; accent-color: #4dabf7; }
-                            .setting-row select { background: #1e1e2e; color: #fff; border: 1px solid rgba(255,255,255,0.25); border-radius: 6px; padding: 5px 8px; font-size: 12px; flex: 1; }
-                            .val-badge { font-size: 12px; font-weight: bold; color: #4dabf7; width: 38px; text-align: right; flex-shrink: 0; }
+                            .section-label { font-size: 11px; font-weight: 700; color: #868e96; text-transform: uppercase; letter-spacing: 0.8px; margin: 14px 0 8px; }
+                            .section-divider { border: none; border-top: 1px solid rgba(255,255,255,0.1); margin: 12px 0; }
+                            .setting-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; font-size: 13px; gap: 8px; }
+                            .setting-row label { display: flex; justify-content: space-between; align-items: center; width: 100%; gap: 8px; font-size: 12px; }
+                            .setting-row input[type=range] { flex: 1; min-width: 0; accent-color: #4dabf7; cursor: pointer; }
+                            .setting-row select { background: #1e1e2c; color: #fff; border: 1px solid rgba(255,255,255,0.25); border-radius: 6px; padding: 5px 8px; font-size: 12px; flex: 1; }
+                            .val-badge { font-size: 12px; font-weight: 700; color: #4dabf7; width: 42px; text-align: right; flex-shrink: 0; }
                             .preset-group { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin-bottom: 12px; }
-                            .btn-preset { padding: 8px 4px; font-size: 11px; border: 1px solid rgba(255,255,255,0.2); border-radius: 8px; background: rgba(255,255,255,0.07); color: white; cursor: pointer; text-align: center; font-weight: normal; }
-                            .btn-preset.active { background: #1971c2; border-color: #1971c2; font-weight: bold; }
-                            .fps-warning { color: #ffd43b; font-size: 11px; margin: -6px 0 8px; padding: 5px 8px; border-radius: 6px; background: rgba(255,212,59,0.12); border: 1px solid rgba(255,212,59,0.35); font-weight: bold; }
-                            .toggle-row { display: flex; align-items: center; justify-content: space-between; font-size: 13px; margin-bottom: 10px; }
-                            .toggle-hint { font-size: 10px; color: #8ce99a; margin-top: -6px; margin-bottom: 8px; }
+                            .btn-preset { padding: 7px 4px; font-size: 11px; border: 1px solid rgba(255,255,255,0.18); border-radius: 8px; background: rgba(255,255,255,0.06); color: white; cursor: pointer; text-align: center; font-weight: 500; transition: all 0.15s; }
+                            .btn-preset:hover { background: rgba(255,255,255,0.15); }
+                            .btn-preset.active { background: #1971c2; border-color: #1971c2; font-weight: 700; box-shadow: 0 0 10px rgba(25,113,194,0.6); }
+                            .fps-warning { color: #ffd43b; font-size: 11px; margin: -4px 0 8px; padding: 5px 8px; border-radius: 6px; background: rgba(255,212,59,0.12); border: 1px solid rgba(255,212,59,0.35); font-weight: 600; line-height: 1.3; }
+                            .toggle-row { display: flex; align-items: center; justify-content: space-between; font-size: 12px; margin-bottom: 8px; }
+                            .toggle-hint { font-size: 10px; color: #8ce99a; margin-top: -4px; margin-bottom: 8px; }
                             .vu-row { display: flex; align-items: center; gap: 8px; font-size: 12px; margin-bottom: 6px; }
-                            .vu-bar { flex: 1; height: 8px; background: #1e1e2e; border-radius: 4px; overflow: hidden; border: 1px solid rgba(255,255,255,0.15); }
+                            .vu-bar { flex: 1; height: 8px; background: #1e1e2c; border-radius: 4px; overflow: hidden; border: 1px solid rgba(255,255,255,0.15); }
                             .vu-fill { width: 0%; height: 100%; background: linear-gradient(90deg, #37b24d 60%, #f59f00 85%, #f03e3e 100%); transition: width 0.05s ease-out; }
                             .brave-link { color: #ff922b; font-size: 11px; text-decoration: underline; cursor: pointer; display: block; text-align: right; margin-top: 4px; }
-
-                            /* ── MODAL ── */
-                            .modal-card { background: #1e1e28; border: 1px solid #ff922b; border-radius: 16px 16px 0 0; width: 100%; max-width: 560px; padding: 20px; color: #fff; font-size: 13px; line-height: 1.5; max-height: 80vh; overflow-y: auto; }
                             .modal-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 8px; }
                             .modal-close { background: none; border: none; color: #aaa; font-size: 22px; cursor: pointer; line-height: 1; padding: 0; }
                         </style>
@@ -254,36 +287,39 @@ class MjpegServer(port: Int, private val controller: CameraController) : NanoHTT
                             <div id="map"></div>
                         </div>
 
-                        <!-- Top Status Bar -->
+                        <!-- Top-Left Status Bar -->
                         <div class="top-bar">
                             <div class="status-badge" id="badge">
                                 <span class="dot" id="statusDot"></span>
                                 <span id="statusText">Verbinde...</span>
                             </div>
                             <div class="viewer-badge" id="viewerBadge">
-                                <span>👥</span><span id="viewerText">1</span>
+                                <span>👥</span><span id="viewerText">1 Zuschauer</span>
                             </div>
                         </div>
 
-                        <!-- Bottom Action Bar (horizontally scrollable) -->
-                        <div class="bottom-bar" id="bottomBar">
-                            <button class="btn-photo" id="photoBtn" onclick="takePhoto()" title="Foto">📸</button>
-                            <button class="btn-audio muted" id="audioBtn" title="Ton">🔇</button>
-                            <button class="btn-megafon" id="megafonBtn" onclick="toggleMegafon()" title="Megafon">📢</button>
-                            <button class="$flashClass" id="flashBtn" onclick="toggleFlash()" title="Taschenlampe">💡</button>
-                            <button class="$wideClass" id="wideBtn" onclick="toggleWideAngle()" title="Weitwinkel">🔍</button>
-                            <button class="btn-switch" id="switchBtn" onclick="switchCamera()" title="Kamera wechseln">🔄</button>
-                            <button class="btn-rotate" onclick="rotateStream()" title="90° drehen">⟲</button>
-                            <button class="$selfieBtnClass" id="selfieBtn" onclick="toggleSelfie()" title="Selfie PiP">🤳</button>
-                            <button class="btn-map active" id="mapBtn" onclick="toggleMapVisibility()" title="GPS-Karte">📍</button>
-                            <button class="btn-settings" id="settingsBtn" onclick="toggleDrawer()" title="Einstellungen">⚙️</button>
+                        <!-- Controls Bar (Top-Right on Desktop, Bottom on Mobile) -->
+                        <div class="controls-bar" id="controlsBar">
+                            <button class="btn-photo" id="photoBtn" onclick="takePhoto()" title="Foto aufnehmen">📸<span class="btn-label-desktop"> Foto</span></button>
+                            <button class="btn-audio muted" id="audioBtn" title="Ton ein/aus">🔇<span class="btn-label-desktop"> Ton an</span></button>
+                            <button class="btn-megafon" id="megafonBtn" onclick="toggleMegafon()" title="Megafon an/aus">📢<span class="btn-label-desktop"> Megafon</span></button>
+                            <button class="$flashClass" id="flashBtn" onclick="toggleFlash()" title="Taschenlampe">💡<span class="btn-label-desktop"> Blitz</span></button>
+                            <button class="$wideClass" id="wideBtn" onclick="toggleWideAngle()" title="Weitwinkel">🔍<span class="btn-label-desktop"> $wideText</span></button>
+                            <button class="btn-switch" id="switchBtn" onclick="switchCamera()" title="Kamera wechseln">🔄<span class="btn-label-desktop"> Kamera</span></button>
+                            <button class="btn-rotate" onclick="rotateStream()" title="90° drehen">⟲<span class="btn-label-desktop"> Drehen</span></button>
+                            <button class="$selfieBtnClass" id="selfieBtn" onclick="toggleSelfie()" title="Selfie PiP">🤳<span class="btn-label-desktop"> Selfie</span></button>
+                            <button class="btn-map active" id="mapBtn" onclick="toggleMapVisibility()" title="GPS-Karte">📍<span class="btn-label-desktop"> Karte</span></button>
+                            <button class="btn-settings" id="settingsBtn" onclick="toggleDrawer()" title="Einstellungen">⚙️<span class="btn-label-desktop"> Setup</span></button>
                         </div>
 
-                        <!-- Settings Drawer -->
+                        <!-- Settings Drawer / Sidebar Card -->
                         <div class="settings-overlay" id="settingsOverlay" onclick="closeDrawer()"></div>
                         <div class="settings-drawer" id="settingsDrawer">
                             <div class="drawer-handle"></div>
-                            <div class="drawer-title">⚙️ Einstellungen</div>
+                            <div class="drawer-header">
+                                <div class="drawer-title">⚙️ Stream Setup</div>
+                                <button class="btn-drawer-close" onclick="closeDrawer()" title="Schließen">✕</button>
+                            </div>
                             <div class="drawer-body">
 
                                 <div class="section-label">⚡ Streaming-Presets</div>
@@ -324,10 +360,10 @@ class MjpegServer(port: Int, private val controller: CameraController) : NanoHTT
                                 <hr class="section-divider">
                                 <div class="section-label">🔊 Audio &amp; Lautstärke</div>
                                 <div class="setting-row">
-                                    <label>🎤 Mikrofon (Eingang): <input type="range" id="volSlider" min="0" max="300" step="10" value="200" oninput="onVolumeChange(this.value)"> <span class="val-badge" id="volVal" style="color:#4dabf7;">200%</span></label>
+                                    <label>🎤 Mikrofon: <input type="range" id="volSlider" min="0" max="300" step="10" value="200" oninput="onVolumeChange(this.value)"> <span class="val-badge" id="volVal" style="color:#4dabf7;">200%</span></label>
                                 </div>
                                 <div class="setting-row">
-                                    <label>📢 Megafon (Lautsprecher): <input type="range" id="megafonVolSlider" min="0" max="100" step="5" value="100" oninput="onMegafonVolumeChange(this.value)"> <span class="val-badge" id="megafonVolVal" style="color:#ff6b6b;">100%</span></label>
+                                    <label>📢 Megafon: <input type="range" id="megafonVolSlider" min="0" max="100" step="5" value="100" oninput="onMegafonVolumeChange(this.value)"> <span class="val-badge" id="megafonVolVal" style="color:#ff6b6b;">100%</span></label>
                                 </div>
                                 <div class="toggle-row">
                                     <span>🛡️ Anti-Clipping (Limiter):</span>
@@ -357,7 +393,7 @@ class MjpegServer(port: Int, private val controller: CameraController) : NanoHTT
                         </div>
 
                         <!-- Brave Help Modal -->
-                        <div id="braveHelpModal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.88); z-index:9999; justify-content:center; align-items:flex-end; backdrop-filter:blur(8px);">
+                        <div id="braveHelpModal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.85); z-index:9999; justify-content:center; align-items:center; backdrop-filter:blur(8px);">
                             <div class="modal-card">
                                 <div class="modal-header">
                                     <h3 style="margin:0;font-size:15px;color:#ff922b;">🦁 Mikrofon in Brave &amp; Chrome freigeben</h3>
@@ -385,6 +421,7 @@ class MjpegServer(port: Int, private val controller: CameraController) : NanoHTT
                                 <button onclick="closeBraveHelpModal()" style="width:100%;background:#339af0;color:#fff;border:none;border-radius:8px;padding:10px;font-weight:bold;cursor:pointer;font-size:14px;">Schließen</button>
                             </div>
                         </div>
+
 
                         <script>
                             const videoEl = document.getElementById('webrtcVideo');
@@ -635,10 +672,10 @@ class MjpegServer(port: Int, private val controller: CameraController) : NanoHTT
                                     const btn = document.getElementById('wideBtn');
                                     if (data.wideAngle) {
                                         btn.classList.add('active');
-                                        btn.textContent = '🔍 Weit: An';
+                                        btn.innerHTML = '🔍<span class="btn-label-desktop"> Weit: An</span>';
                                     } else {
                                         btn.classList.remove('active');
-                                        btn.textContent = '🔍 Weitwinkel';
+                                        btn.innerHTML = '🔍<span class="btn-label-desktop"> Weitwinkel</span>';
                                     }
                                 } catch(e) {}
                             }
@@ -650,9 +687,9 @@ class MjpegServer(port: Int, private val controller: CameraController) : NanoHTT
                                     const data = await resp.json();
                                     const switchBtn = document.getElementById('switchBtn');
                                     if (data.facing === 'front') {
-                                        switchBtn.textContent = '🔄 Kamera: Selfie';
+                                        switchBtn.innerHTML = '🔄<span class="btn-label-desktop"> Selfie</span>';
                                     } else {
-                                        switchBtn.textContent = '🔄 Kamera wechseln';
+                                        switchBtn.innerHTML = '🔄<span class="btn-label-desktop"> Kamera</span>';
                                     }
                                 } catch(e) {}
                             }
@@ -666,19 +703,19 @@ class MjpegServer(port: Int, private val controller: CameraController) : NanoHTT
                                         alert('Dieses Smartphone unterstützt keine gleichzeitige Hardware-Doppelkamera (Concurrent Camera) für Bild-in-Bild.\n\nNutze den Button "🔄 Kamera wechseln", um die Kamera umzuschalten.');
                                         selfiePip.style.display = 'none';
                                         selfieBtn.classList.remove('active');
-                                        selfieBtn.textContent = '🤳 Selfie: Aus';
+                                        selfieBtn.innerHTML = '🤳<span class="btn-label-desktop"> Selfie: Aus</span>';
                                         return;
                                     }
                                     selfieActive = data.enabled;
                                     if (selfieActive) {
                                         selfiePip.style.display = 'block';
                                         selfieBtn.classList.add('active');
-                                        selfieBtn.textContent = '🤳 Selfie: An';
+                                        selfieBtn.innerHTML = '🤳<span class="btn-label-desktop"> Selfie: An</span>';
                                         pollFront();
                                     } else {
                                         selfiePip.style.display = 'none';
                                         selfieBtn.classList.remove('active');
-                                        selfieBtn.textContent = '🤳 Selfie: Aus';
+                                        selfieBtn.innerHTML = '🤳<span class="btn-label-desktop"> Selfie: Aus</span>';
                                     }
                                 } catch (e) {
                                     console.error('Failed to toggle selfie camera:', e);
@@ -699,7 +736,7 @@ class MjpegServer(port: Int, private val controller: CameraController) : NanoHTT
                                 fetch('/audio_state?enabled=' + isAudioEnabled, { method: 'POST' }).catch(() => {});
 
                                 if (isAudioEnabled) {
-                                    audioBtn.textContent = '🔊 Ton an';
+                                    audioBtn.innerHTML = '🔊<span class="btn-label-desktop"> Ton an</span>';
                                     audioBtn.classList.remove('muted');
                                     if (audioGainNode && audioCtx) {
                                         audioGainNode.gain.setTargetAtTime(userVolume, audioCtx.currentTime, 0.02);
@@ -710,7 +747,7 @@ class MjpegServer(port: Int, private val controller: CameraController) : NanoHTT
                                         startPcmFallbackAudio();
                                     }
                                 } else {
-                                    audioBtn.textContent = '🔇 Ton aus';
+                                    audioBtn.innerHTML = '🔇<span class="btn-label-desktop"> Ton aus</span>';
                                     audioBtn.classList.add('muted');
                                     if (audioGainNode && audioCtx) {
                                         audioGainNode.gain.setTargetAtTime(0, audioCtx.currentTime, 0.02);
@@ -766,12 +803,12 @@ class MjpegServer(port: Int, private val controller: CameraController) : NanoHTT
                                         }
 
                                         megafonBtn.classList.add('active');
-                                        megafonBtn.textContent = '📢 Megafon: An';
+                                        megafonBtn.innerHTML = '📢<span class="btn-label-desktop"> Megafon: An</span>';
                                     } catch (err) {
                                         console.error('Megafon error:', err);
                                         isMegafonActive = false;
                                         megafonBtn.classList.remove('active');
-                                        megafonBtn.textContent = '📢 Megafon';
+                                        megafonBtn.innerHTML = '📢<span class="btn-label-desktop"> Megafon</span>';
                                         if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
                                             alert('🎤 Mikrofon-Zugriff verweigert.\n\nKlicke auf das 🔒 Schloss-Symbol in der Adressleiste → "Mikrofon" → "Erlauben", dann nochmal Megafon drücken.');
                                         } else if (err.name === 'NotFoundError') {
@@ -797,7 +834,7 @@ class MjpegServer(port: Int, private val controller: CameraController) : NanoHTT
                                     stopPcmMegafonFallback();
 
                                     megafonBtn.classList.remove('active');
-                                    megafonBtn.textContent = '📢 Megafon';
+                                    megafonBtn.innerHTML = '📢<span class="btn-label-desktop"> Megafon</span>';
 
                                     // Restore incoming stream volume smoothly after Megafon stops
                                     setTimeout(() => {
