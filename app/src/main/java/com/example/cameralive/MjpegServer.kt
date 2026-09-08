@@ -261,11 +261,19 @@ class MjpegServer(port: Int, private val controller: CameraController) : NanoHTT
                             <div style="font-weight: bold; margin-bottom: 6px; color: #aaa; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px;">🔊 Audio &amp; Lautstärke</div>
                             <label>🎤 Mikrofon: <input type="range" id="volSlider" min="0" max="500" step="10" value="250" oninput="onVolumeChange(this.value)"> <span id="volVal" style="color: #4dabf7; width: 42px;">250%</span></label>
                             <label style="margin-top: 4px;">📢 Megafon: <input type="range" id="megafonVolSlider" min="0" max="100" step="5" value="100" oninput="onMegafonVolumeChange(this.value)"> <span id="megafonVolVal" style="color: #ff6b6b; width: 42px;">100%</span></label>
+                            <label style="display: flex; align-items: center; justify-content: space-between; margin-top: 6px; font-size: 11px; cursor: pointer;">
+                                <span>🛡️ Anti-Clipping (Limiter):</span>
+                                <input type="checkbox" id="limiterCheck" checked onchange="toggleLimiter(this.checked)" style="width: 15px; height: 15px; cursor: pointer;">
+                            </label>
+                            <div style="font-size: 10px; color: #8ce99a; margin-top: 2px;">Dämpft Rückkopplungen &amp; schützt Ohren</div>
                             <div style="display: flex; align-items: center; gap: 8px; margin-top: 5px; font-size: 11px;">
                                 <span>🎤 Pegel:</span>
                                 <div style="flex: 1; height: 8px; background: #222; border-radius: 4px; overflow: hidden; border: 1px solid rgba(255,255,255,0.2);">
                                     <div id="vuMeter" style="width: 0%; height: 100%; background: linear-gradient(90deg, #28a745 60%, #ffc107 85%, #dc3545 100%); transition: width 0.05s ease-out;"></div>
                                 </div>
+                            </div>
+                            <div style="margin-top: 6px; text-align: right;">
+                                <a href="javascript:void(0)" onclick="showBraveHelpModal()" style="color: #ff922b; font-size: 10px; text-decoration: underline;">🦁 Brave / Chrome Mikrofon-Hilfe</a>
                             </div>
                             <div style="border-top: 1px solid rgba(255,255,255,0.15); margin: 8px 0;"></div>
                             <div style="font-weight: bold; margin-bottom: 6px; color: #aaa; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px;">📍 GPS &amp; Standort</div>
@@ -290,6 +298,43 @@ class MjpegServer(port: Int, private val controller: CameraController) : NanoHTT
                             <button class="btn-map active" id="mapBtn" onclick="toggleMapVisibility()" title="GPS-Karte ein-/ausblenden">📍 Karte</button>
                             <button class="btn-audio muted" id="audioBtn" title="Audio">🔇 Ton an</button>
                             <button class="btn-megafon" id="megafonBtn" onclick="toggleMegafon()" title="Megafon: Mikrofon an Handy-Lautsprecher">📢 Megafon</button>
+                        </div>
+
+                        <div id="braveHelpModal" style="display:none; position:fixed; top:0; left:0; width:100vw; height:100vh; background:rgba(0,0,0,0.85); z-index:9999; justify-content:center; align-items:center; backdrop-filter:blur(8px);">
+                            <div style="background:#1e1e24; border:1px solid #ff922b; border-radius:12px; max-width:500px; width:90%; padding:20px; color:#fff; box-shadow:0 8px 32px rgba(0,0,0,0.8); font-size:13px; line-height:1.5;">
+                                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; border-bottom:1px solid rgba(255,255,255,0.1); padding-bottom:8px;">
+                                    <h3 style="margin:0; font-size:16px; color:#ff922b; display:flex; align-items:center; gap:6px;">🦁 Mikrofon in Brave &amp; Chrome freigeben</h3>
+                                    <button onclick="closeBraveHelpModal()" style="background:none; border:none; color:#aaa; font-size:20px; cursor:pointer; line-height:1;">✕</button>
+                                </div>
+                                <p style="margin-top:0; color:#ddd; font-size:12px;">Browser blockieren Mikrofon-Zugriff auf lokalen IP-Adressen (HTTP) aus Sicherheitsgründen. So aktivierst du Megafon in 3 Klicks:</p>
+                                <ol style="padding-left:20px; margin-bottom:15px; color:#f1f3f5; font-size:12px;">
+                                    <li style="margin-bottom:8px;">
+                                        Öffne einen neuen Tab mit der Flag-Seite:<br>
+                                        <div style="display:flex; gap:6px; margin-top:4px;">
+                                            <input type="text" id="flagUrlInput" readonly value="brave://flags/#unsafely-treat-insecure-origin-as-secure" style="background:#111; color:#ff922b; border:1px solid #444; border-radius:4px; padding:4px 8px; font-size:11px; flex:1;">
+                                            <button onclick="copyToClipboard('flagUrlInput')" style="background:#ff922b; color:#000; border:none; border-radius:4px; padding:4px 8px; font-size:11px; font-weight:bold; cursor:pointer;">📋 Kopieren</button>
+                                        </div>
+                                        <span style="font-size:10px; color:#aaa;">(In Chrome: <code>chrome://flags/#unsafely-treat-insecure-origin-as-secure</code>)</span>
+                                    </li>
+                                    <li style="margin-bottom:8px;">
+                                        Trage diese exakte URL in das Flag-Eingabefeld ein:<br>
+                                        <div style="display:flex; gap:6px; margin-top:4px;">
+                                            <input type="text" id="streamUrlInput" readonly value="" style="background:#111; color:#51cf66; border:1px solid #444; border-radius:4px; padding:4px 8px; font-size:11px; flex:1;">
+                                            <button onclick="copyToClipboard('streamUrlInput')" style="background:#51cf66; color:#000; border:none; border-radius:4px; padding:4px 8px; font-size:11px; font-weight:bold; cursor:pointer;">📋 Kopieren</button>
+                                        </div>
+                                    </li>
+                                    <li style="margin-bottom:8px;">
+                                        Stelle das Dropdown rechts daneben auf <b>"Enabled"</b>.
+                                    </li>
+                                    <li style="margin-bottom:8px;">
+                                        Klicke unten rechts auf den blauen <b>"Relaunch"</b> Button.
+                                    </li>
+                                </ol>
+                                <div style="background:rgba(255, 146, 43, 0.15); border:1px solid rgba(255, 146, 43, 0.4); border-radius:6px; padding:8px 10px; font-size:11px; color:#ffc078; margin-bottom:15px;">
+                                    🛡️ <b>Brave Shields Tipp:</b> Falls Brave weiterhin blockiert, klicke links in der URL-Leiste auf das Löwen-Symbol und erlaube "Mikrofon" bzw. schalte "Shields" für diesen lokalen Stream aus.
+                                </div>
+                                <button onclick="closeBraveHelpModal()" style="width:100%; background:#339af0; color:#fff; border:none; border-radius:6px; padding:8px; font-weight:bold; cursor:pointer;">Schließen</button>
+                            </div>
                         </div>
 
                         <script>
@@ -317,6 +362,10 @@ class MjpegServer(port: Int, private val controller: CameraController) : NanoHTT
                             let vuAnimationId = null;
                             let pcmAbortController = null;
 
+                            let isLimiterEnabled = true;
+                            let audioCompressor = null;
+                            let audioHighpass = null;
+
                             function initAudioPipeline() {
                                 if (!audioCtx) {
                                     try {
@@ -324,14 +373,88 @@ class MjpegServer(port: Int, private val controller: CameraController) : NanoHTT
                                     } catch (e) {}
                                 }
                                 if (audioCtx && !audioGainNode) {
+                                    // 1. Gain Node
                                     audioGainNode = audioCtx.createGain();
                                     audioGainNode.gain.value = isAudioEnabled ? userVolume : 0.0;
+
+                                    // 2. High-pass filter to eliminate sub-bass rumble & feedback resonance
+                                    audioHighpass = audioCtx.createBiquadFilter();
+                                    audioHighpass.type = 'highpass';
+                                    audioHighpass.frequency.value = 110;
+
+                                    // 3. Studio-grade Limiter / Dynamic Compressor against clipping & feedback oscillation
+                                    audioCompressor = audioCtx.createDynamicsCompressor();
+                                    audioCompressor.threshold.setValueAtTime(-14, audioCtx.currentTime);
+                                    audioCompressor.knee.setValueAtTime(4, audioCtx.currentTime);
+                                    audioCompressor.ratio.setValueAtTime(20, audioCtx.currentTime); // Brickwall limiting
+                                    audioCompressor.attack.setValueAtTime(0.002, audioCtx.currentTime); // 2ms attack
+                                    audioCompressor.release.setValueAtTime(0.12, audioCtx.currentTime);
+
+                                    // 4. Analyser
                                     audioAnalyser = audioCtx.createAnalyser();
                                     audioAnalyser.fftSize = 128;
                                     audioAnalyser.smoothingTimeConstant = 0.5;
-                                    audioGainNode.connect(audioAnalyser);
-                                    audioAnalyser.connect(audioCtx.destination);
+
+                                    connectAudioChain();
                                     startVuMeter();
+                                }
+                            }
+
+                            function connectAudioChain() {
+                                if (!audioGainNode || !audioCtx) return;
+                                try {
+                                    audioGainNode.disconnect();
+                                    if (audioHighpass) audioHighpass.disconnect();
+                                    if (audioCompressor) audioCompressor.disconnect();
+                                    if (audioAnalyser) audioAnalyser.disconnect();
+
+                                    if (isLimiterEnabled && audioCompressor && audioHighpass) {
+                                        audioGainNode.connect(audioHighpass);
+                                        audioHighpass.connect(audioCompressor);
+                                        audioCompressor.connect(audioAnalyser);
+                                    } else {
+                                        audioGainNode.connect(audioAnalyser);
+                                    }
+                                    audioAnalyser.connect(audioCtx.destination);
+                                } catch (e) {
+                                    console.warn('Audio chain connection error:', e);
+                                }
+                            }
+
+                            function toggleLimiter(enabled) {
+                                isLimiterEnabled = enabled;
+                                connectAudioChain();
+                            }
+
+                            function showBraveHelpModal() {
+                                const streamUrlInput = document.getElementById('streamUrlInput');
+                                if (streamUrlInput) {
+                                    streamUrlInput.value = 'http://' + window.location.host;
+                                }
+                                const modal = document.getElementById('braveHelpModal');
+                                if (modal) modal.style.display = 'flex';
+                            }
+
+                            function closeBraveHelpModal() {
+                                const modal = document.getElementById('braveHelpModal');
+                                if (modal) modal.style.display = 'none';
+                            }
+
+                            function copyToClipboard(elementId) {
+                                const el = document.getElementById(elementId);
+                                if (!el) return;
+                                el.select();
+                                el.setSelectionRange(0, 99999);
+                                if (navigator.clipboard) {
+                                    navigator.clipboard.writeText(el.value).then(() => {
+                                        alert('In die Zwischenablage kopiert:\n' + el.value);
+                                    }).catch(() => {
+                                        document.execCommand('copy');
+                                        alert('In die Zwischenablage kopiert:\n' + el.value);
+                                    });
+                                } else {
+                                    document.execCommand('copy');
+                                    alert('In die Zwischenablage kopiert:\n' + el.value);
                                 }
                             }
 
@@ -340,7 +463,7 @@ class MjpegServer(port: Int, private val controller: CameraController) : NanoHTT
                                 const vuMeter = document.getElementById('vuMeter');
                                 const dataArray = new Uint8Array(64);
                                 function update() {
-                                    if (audioAnalyser && isAudioEnabled) {
+                                    if (audioAnalyser && isAudioEnabled && (!isMegafonActive)) {
                                         audioAnalyser.getByteFrequencyData(dataArray);
                                         let sum = 0;
                                         for (let i = 0; i < dataArray.length; i++) {
@@ -362,7 +485,7 @@ class MjpegServer(port: Int, private val controller: CameraController) : NanoHTT
                                 const volValEl = document.getElementById('volVal');
                                 if (volValEl) volValEl.textContent = val + '%';
                                 if (audioGainNode && audioCtx) {
-                                    if (isAudioEnabled) {
+                                    if (isAudioEnabled && !isMegafonActive) {
                                         audioGainNode.gain.setTargetAtTime(userVolume, audioCtx.currentTime, 0.02);
                                     }
                                 }
@@ -527,7 +650,7 @@ class MjpegServer(port: Int, private val controller: CameraController) : NanoHTT
 
                                 if (isMegafonActive) {
                                     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-                                        alert('Mikrofon-Zugriff im Browser erfordert HTTPS oder http://localhost / http://127.0.0.1.\n\nIn Chrome kann die IP freigegeben werden unter:\nchrome://flags/#unsafely-treat-insecure-origin-as-secure');
+                                        showBraveHelpModal();
                                         isMegafonActive = false;
                                         return;
                                     }
@@ -541,8 +664,14 @@ class MjpegServer(port: Int, private val controller: CameraController) : NanoHTT
                                             }
                                         });
 
-                                        // Tell phone to set volume to max & route to loudspeaker
+                                        // Auto-duck incoming stream to prevent acoustic feedback howl
+                                        if (audioGainNode && audioCtx) {
+                                            audioGainNode.gain.setTargetAtTime(0, audioCtx.currentTime, 0.04);
+                                        }
+
+                                        // Tell phone to route to loudspeaker and set volume
                                         await fetch('/megafon?active=true', { method: 'POST' });
+                                        fetch('/set_speaker_volume?vol=' + megafonVolume, { method: 'POST' }).catch(() => {});
 
                                         const micTrack = megafonStream.getAudioTracks()[0];
 
@@ -558,7 +687,7 @@ class MjpegServer(port: Int, private val controller: CameraController) : NanoHTT
                                         megafonBtn.textContent = '📢 Megafon: An';
                                     } catch (err) {
                                         console.error('Megafon error:', err);
-                                        alert('Mikrofon-Fehler: ' + (err.message || err));
+                                        showBraveHelpModal();
                                         isMegafonActive = false;
                                         megafonBtn.classList.remove('active');
                                         megafonBtn.textContent = '📢 Megafon';
@@ -579,6 +708,13 @@ class MjpegServer(port: Int, private val controller: CameraController) : NanoHTT
 
                                     megafonBtn.classList.remove('active');
                                     megafonBtn.textContent = '📢 Megafon';
+
+                                    // Restore incoming stream volume smoothly after Megafon stops
+                                    setTimeout(() => {
+                                        if (isAudioEnabled && audioGainNode && audioCtx && !isMegafonActive) {
+                                            audioGainNode.gain.setTargetAtTime(userVolume, audioCtx.currentTime, 0.08);
+                                        }
+                                    }, 300);
                                 }
                             }
 
