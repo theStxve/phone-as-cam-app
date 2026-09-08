@@ -428,6 +428,7 @@ fun AutomationConfigDialog(
     var alarmUrl by remember { mutableStateOf(WebhookManager.alarmWebhookUrl) }
 
     var driveEnabled by remember(GoogleDriveBackupManager.isAutoBackupEnabled) { mutableStateOf(GoogleDriveBackupManager.isAutoBackupEnabled) }
+    var clipEnabled by remember(GoogleDriveBackupManager.isClipBackupEnabled) { mutableStateOf(GoogleDriveBackupManager.isClipBackupEnabled) }
     val connectedAccount = GoogleDriveBackupManager.connectedAccountEmail
 
     var selectedTab by remember { mutableStateOf(0) }
@@ -628,8 +629,19 @@ fun AutomationConfigDialog(
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.SpaceBetween
                             ) {
-                                Text("Fotos automatisch sichern:", style = MaterialTheme.typography.bodyMedium)
+                                Text("📸 Fotos automatisch sichern:", style = MaterialTheme.typography.bodyMedium)
                                 Switch(checked = driveEnabled, onCheckedChange = { driveEnabled = it })
+                            }
+
+                            Spacer(modifier = Modifier.height(4.dp))
+
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Text("🎥 Video-Clips sichern:", style = MaterialTheme.typography.bodyMedium)
+                                Switch(checked = clipEnabled, onCheckedChange = { clipEnabled = it })
                             }
 
                             Spacer(modifier = Modifier.height(6.dp))
@@ -674,6 +686,7 @@ fun AutomationConfigDialog(
                 WebhookManager.save(context)
 
                 GoogleDriveBackupManager.isAutoBackupEnabled = driveEnabled
+                GoogleDriveBackupManager.isClipBackupEnabled = clipEnabled
                 GoogleDriveBackupManager.save(context)
 
                 Toast.makeText(context, "✓ Einstellungen gespeichert", Toast.LENGTH_SHORT).show()

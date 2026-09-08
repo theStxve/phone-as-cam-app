@@ -172,6 +172,8 @@ class MjpegServer(port: Int, private val controller: CameraController) : NanoHTT
                             .controls-bar button:active { transform: scale(0.96); }
                             
                             .btn-photo   { background: #198754; }
+                            .btn-clip    { background: #e8590c; }
+                            .btn-clip.active { background: #dc3545; box-shadow: 0 0 14px #dc3545; animation: megaPulse 1s infinite; }
                             .btn-audio   { background: #28a745; }
                             .btn-audio.muted { background: #495057; }
                             .btn-megafon { background: #c2255c; }
@@ -303,6 +305,7 @@ class MjpegServer(port: Int, private val controller: CameraController) : NanoHTT
                         <!-- Controls Bar (Top-Right on Desktop, Bottom on Mobile) -->
                         <div class="controls-bar" id="controlsBar">
                             <button class="btn-photo" id="photoBtn" onclick="takePhoto()" title="Foto aufnehmen">📸<span class="btn-label-desktop"> Foto</span></button>
+                            <button class="btn-clip" id="clipBtn" onclick="recordClip(10)" title="10-Sekunden Clip aufnehmen">🎥<span class="btn-label-desktop"> Clip (10s)</span></button>
                             <button class="btn-audio muted" id="audioBtn" title="Ton ein/aus">🔇<span class="btn-label-desktop"> Ton an</span></button>
                             <button class="btn-megafon" id="megafonBtn" onclick="toggleMegafon()" title="Megafon an/aus">📢<span class="btn-label-desktop"> Megafon</span></button>
                             <button class="$flashClass" id="flashBtn" onclick="toggleFlash()" title="Taschenlampe">💡<span class="btn-label-desktop"> Blitz</span></button>
@@ -362,12 +365,21 @@ class MjpegServer(port: Int, private val controller: CameraController) : NanoHTT
                                 <hr class="section-divider">
                                 <div class="section-label">☁️ Google Drive Cloud</div>
                                 <div class="setting-row" style="font-size:12px;">
-                                    <span>Auto-Upload:</span>
-                                    <span style="font-weight:700;color:${if (isDriveLinked) "#51cf66" else "#adb5bd"};">${if (isDriveLinked) "🟢 Aktiv ($driveEmail)" else "⚪ Inaktiv (in App verknüpfen)"}</span>
+                                    <span>Status:</span>
+                                    <span id="driveAccountBadge" style="font-weight:700;color:${if (isDriveLinked) "#51cf66" else "#adb5bd"};">${if (isDriveLinked) "🟢 $driveEmail" else "⚪ Nicht verknüpft (in App)"}</span>
+                                </div>
+                                <div class="toggle-row">
+                                    <span>📸 Fotos automatisch sichern:</span>
+                                    <input type="checkbox" id="drivePhotoCheck" ${if (GoogleDriveBackupManager.isAutoBackupEnabled) "checked" else ""} onchange="onDriveToggle()" style="width:18px;height:18px;cursor:pointer;">
+                                </div>
+                                <div class="toggle-row">
+                                    <span>🎥 Video-Clips sichern:</span>
+                                    <input type="checkbox" id="driveClipCheck" ${if (GoogleDriveBackupManager.isClipBackupEnabled) "checked" else ""} onchange="onDriveToggle()" style="width:18px;height:18px;cursor:pointer;">
                                 </div>
                                 <div style="margin-top:6px;margin-bottom:6px;">
                                     <a href="https://drive.google.com/drive/u/0/my-drive" target="_blank" style="width:100%;text-align:center;background:rgba(66,133,244,0.15);border:1px solid #4285f4;color:#4dabf7;padding:8px 10px;border-radius:8px;text-decoration:none;font-size:12px;font-weight:600;display:block;box-sizing:border-box;">📁 Google Drive Ordner öffnen ↗</a>
                                 </div>
+                                <div id="driveLastStatus" style="font-size:10px;color:#868e96;text-align:right;margin-top:2px;">${GoogleDriveBackupManager.lastBackupStatus}</div>
 
                                 <hr class="section-divider">
                                 <div class="section-label">🔊 Audio &amp; Lautstärke</div>
@@ -654,8 +666,8 @@ class MjpegServer(port: Int, private val controller: CameraController) : NanoHTT
                             // --- Remote Photo Capture & Instant Download ---
                             async function takePhoto() {
                                 const btn = document.getElementById('photoBtn');
-                                const origText = btn.textContent;
-                                btn.textContent = '⏳ Aufnahme...';
+                                const origHtml = btn.innerHTML;
+                                btn.innerHTML = '⏳<span class="btn-label-desktop"> Foto...</span>';
                                 btn.disabled = true;
                                 try {
                                     const res = await fetch('/capture');
@@ -669,16 +681,160 @@ class MjpegServer(port: Int, private val controller: CameraController) : NanoHTT
                                         a.click();
                                         document.body.removeChild(a);
                                         URL.revokeObjectURL(url);
+                                        fetchDriveState();
                                     } else {
                                         alert('Fehler bei der Fotoaufnahme (Kamera möglicherweise ausgelastet).');
                                     }
                                 } catch (e) {
                                     alert('Foto-Fehler: ' + e);
                                 } finally {
-                                    btn.textContent = origText;
+                                    btn.innerHTML = origHtml;
                                     btn.disabled = false;
                                 }
                             }
+
+                            // --- 10-Second Video Clip Recording & Cloud Upload ---
+                            let mediaRecorder = null;
+                            let recordedChunks = [];
+                            let isRecordingClip = false;
+
+                            async function recordClip(durationSec = 10) {
+                                if (isRecordingClip) return;
+                                const clipBtn = document.getElementById('clipBtn');
+
+                                let stream = videoEl.srcObject;
+                                if (!stream && videoEl.captureStream) {
+                                    stream = videoEl.captureStream();
+                                }
+
+                                if (!stream) {
+                                    alert('Kein aktiver Video-Stream für Clip-Aufnahme vorhanden.');
+                                    return;
+                                }
+
+                                try {
+                                    isRecordingClip = true;
+                                    recordedChunks = [];
+                                    
+                                    let mimeType = 'video/webm;codecs=vp8,opus';
+                                    if (!MediaRecorder.isTypeSupported(mimeType)) {
+                                        mimeType = 'video/webm';
+                                    }
+                                    if (!MediaRecorder.isTypeSupported(mimeType)) {
+                                        mimeType = 'video/mp4';
+                                    }
+                                    if (!MediaRecorder.isTypeSupported(mimeType)) {
+                                        mimeType = '';
+                                    }
+                                    
+                                    const options = mimeType ? { mimeType: mimeType } : {};
+                                    mediaRecorder = new MediaRecorder(stream, options);
+
+                                    mediaRecorder.ondataavailable = (e) => {
+                                        if (e.data && e.data.size > 0) {
+                                            recordedChunks.push(e.data);
+                                        }
+                                    };
+
+                                    mediaRecorder.onstop = async () => {
+                                        const actualMime = mimeType || 'video/webm';
+                                        const blob = new Blob(recordedChunks, { type: actualMime });
+                                        const ext = actualMime.includes('mp4') ? '.mp4' : '.webm';
+                                        const filename = 'clip_' + Date.now() + ext;
+
+                                        // 1. Download in browser
+                                        const url = URL.createObjectURL(blob);
+                                        const a = document.createElement('a');
+                                        a.href = url;
+                                        a.download = filename;
+                                        document.body.appendChild(a);
+                                        a.click();
+                                        document.body.removeChild(a);
+                                        URL.revokeObjectURL(url);
+
+                                        // 2. Upload to Google Drive via Phone Server
+                                        try {
+                                            fetch('/upload_clip?name=' + filename, {
+                                                method: 'POST',
+                                                headers: { 'Content-Type': actualMime },
+                                                body: blob
+                                            }).then(() => fetchDriveState()).catch(() => {});
+                                        } catch(e) {}
+
+                                        isRecordingClip = false;
+                                        if (clipBtn) {
+                                            clipBtn.classList.remove('active');
+                                            clipBtn.innerHTML = '🎥<span class="btn-label-desktop"> Clip (10s)</span>';
+                                        }
+                                    };
+
+                                    mediaRecorder.start(500);
+                                    if (clipBtn) clipBtn.classList.add('active');
+
+                                    let remaining = durationSec;
+                                    if (clipBtn) clipBtn.innerHTML = '🔴<span class="btn-label-desktop"> ' + remaining + 's</span>';
+
+                                    const timer = setInterval(() => {
+                                        remaining--;
+                                        if (remaining > 0) {
+                                            if (clipBtn) clipBtn.innerHTML = '🔴<span class="btn-label-desktop"> ' + remaining + 's</span>';
+                                        } else {
+                                            clearInterval(timer);
+                                            if (mediaRecorder && mediaRecorder.state === 'recording') {
+                                                mediaRecorder.stop();
+                                            }
+                                        }
+                                    }, 1000);
+
+                                } catch (e) {
+                                    console.error('Clip error:', e);
+                                    isRecordingClip = false;
+                                    if (clipBtn) {
+                                        clipBtn.classList.remove('active');
+                                        clipBtn.innerHTML = '🎥<span class="btn-label-desktop"> Clip (10s)</span>';
+                                    }
+                                    alert('Clip-Fehler: ' + e.message);
+                                }
+                            }
+
+                            // --- Google Drive State Sync & Toggle ---
+                            async function fetchDriveState() {
+                                try {
+                                    const resp = await fetch('/drive_state');
+                                    const data = await resp.json();
+                                    const badge = document.getElementById('driveAccountBadge');
+                                    const photoCheck = document.getElementById('drivePhotoCheck');
+                                    const clipCheck = document.getElementById('driveClipCheck');
+                                    const statusEl = document.getElementById('driveLastStatus');
+
+                                    if (badge) {
+                                        if (data.connected && data.email) {
+                                            badge.textContent = '🟢 ' + data.email;
+                                            badge.style.color = '#51cf66';
+                                        } else {
+                                            badge.textContent = '⚪ Nicht verknüpft (in App)';
+                                            badge.style.color = '#adb5bd';
+                                        }
+                                    }
+                                    if (photoCheck && data.photoBackup !== undefined) photoCheck.checked = data.photoBackup;
+                                    if (clipCheck && data.clipBackup !== undefined) clipCheck.checked = data.clipBackup;
+                                    if (statusEl && data.lastStatus) statusEl.textContent = data.lastStatus;
+                                } catch(e) {}
+                            }
+
+                            async function onDriveToggle() {
+                                const photoCheck = document.getElementById('drivePhotoCheck');
+                                const clipCheck = document.getElementById('driveClipCheck');
+                                const photoVal = photoCheck ? photoCheck.checked : true;
+                                const clipVal = clipCheck ? clipCheck.checked : true;
+                                try {
+                                    await fetch('/drive_state?photoBackup=' + photoVal + '&clipBackup=' + clipVal, { method: 'POST' });
+                                    fetchDriveState();
+                                } catch(e) {}
+                            }
+
+                            fetchDriveState();
+                            setInterval(fetchDriveState, 8000);
 
                             // --- Rotate Stream ---
                             function rotateStream() {
@@ -1578,6 +1734,53 @@ class MjpegServer(port: Int, private val controller: CameraController) : NanoHTT
                     return response
                 } else {
                     return newFixedLengthResponse(Response.Status.SERVICE_UNAVAILABLE, "text/plain", "Could not capture photo")
+                }
+            }
+            "/drive_state" -> {
+                val email = GoogleDriveBackupManager.connectedAccountEmail ?: ""
+                val isConnected = email.isNotBlank()
+                if (session.method == Method.POST) {
+                    session.parms["photoBackup"]?.toBooleanStrictOrNull()?.let {
+                        GoogleDriveBackupManager.isAutoBackupEnabled = it
+                    }
+                    session.parms["clipBackup"]?.toBooleanStrictOrNull()?.let {
+                        GoogleDriveBackupManager.isClipBackupEnabled = it
+                    }
+                    service?.let { GoogleDriveBackupManager.save(it) }
+                }
+                val json = """{"connected":$isConnected,"email":"$email","photoBackup":${GoogleDriveBackupManager.isAutoBackupEnabled},"clipBackup":${GoogleDriveBackupManager.isClipBackupEnabled},"lastStatus":"${GoogleDriveBackupManager.lastBackupStatus.replace("\"", "\\\"")}"}"""
+                val res = newFixedLengthResponse(Response.Status.OK, "application/json", json)
+                res.addHeader("Access-Control-Allow-Origin", "*")
+                res.addHeader("Cache-Control", "no-cache, no-store, must-revalidate")
+                return res
+            }
+            "/upload_clip" -> {
+                if (session.method == Method.POST) {
+                    val filename = session.parms["name"] ?: "clip_${System.currentTimeMillis()}.webm"
+                    val contentLength = session.headers["content-length"]?.toIntOrNull() ?: 0
+                    val svc = service
+                    if (contentLength > 0 && svc != null) {
+                        val buffer = ByteArray(contentLength)
+                        var totalRead = 0
+                        while (totalRead < contentLength) {
+                            val r = session.inputStream.read(buffer, totalRead, contentLength - totalRead)
+                            if (r == -1) break
+                            totalRead += r
+                        }
+                        if (totalRead > 0) {
+                            val clipData = if (totalRead == contentLength) buffer else buffer.copyOf(totalRead)
+                            GoogleDriveBackupManager.uploadClipAsync(
+                                svc,
+                                clipData,
+                                filename,
+                                if (filename.endsWith(".mp4")) "video/mp4" else "video/webm"
+                            )
+                            val res = newFixedLengthResponse(Response.Status.OK, "application/json", "{\"success\":true,\"bytes\":$totalRead}")
+                            res.addHeader("Access-Control-Allow-Origin", "*")
+                            return res
+                        }
+                    }
+                    return newFixedLengthResponse(Response.Status.BAD_REQUEST, "text/plain", "No data")
                 }
             }
             "/set_photo_quality" -> {

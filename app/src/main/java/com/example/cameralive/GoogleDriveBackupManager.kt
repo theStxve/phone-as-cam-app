@@ -19,11 +19,13 @@ object GoogleDriveBackupManager {
     private const val TAG = "GoogleDriveBackup"
     private const val PREFS_NAME = "CameraLiveDrivePrefs"
     private const val KEY_DRIVE_BACKUP_ENABLED = "KEY_DRIVE_BACKUP_ENABLED"
+    private const val KEY_CLIP_BACKUP_ENABLED = "KEY_CLIP_BACKUP_ENABLED"
     private const val KEY_CONNECTED_ACCOUNT = "KEY_CONNECTED_ACCOUNT"
 
     val DRIVE_SCOPE = Scope("https://www.googleapis.com/auth/drive.file")
 
-    var isAutoBackupEnabled by mutableStateOf(false)
+    var isAutoBackupEnabled by mutableStateOf(true)
+    var isClipBackupEnabled by mutableStateOf(true)
     var connectedAccountEmail by mutableStateOf<String?>(null)
     var lastBackupStatus by mutableStateOf("Kein Backup bisher")
 
@@ -38,7 +40,8 @@ object GoogleDriveBackupManager {
 
     fun init(context: Context) {
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        isAutoBackupEnabled = prefs.getBoolean(KEY_DRIVE_BACKUP_ENABLED, false)
+        isAutoBackupEnabled = prefs.getBoolean(KEY_DRIVE_BACKUP_ENABLED, true)
+        isClipBackupEnabled = prefs.getBoolean(KEY_CLIP_BACKUP_ENABLED, true)
         val savedEmail = prefs.getString(KEY_CONNECTED_ACCOUNT, null)
 
         val currentAccount = GoogleSignIn.getLastSignedInAccount(context)
@@ -53,6 +56,7 @@ object GoogleDriveBackupManager {
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         prefs.edit()
             .putBoolean(KEY_DRIVE_BACKUP_ENABLED, isAutoBackupEnabled)
+            .putBoolean(KEY_CLIP_BACKUP_ENABLED, isClipBackupEnabled)
             .putString(KEY_CONNECTED_ACCOUNT, connectedAccountEmail)
             .apply()
     }
@@ -60,6 +64,7 @@ object GoogleDriveBackupManager {
     fun setAccountConnected(email: String?, enabled: Boolean, context: Context) {
         connectedAccountEmail = email
         isAutoBackupEnabled = enabled
+        isClipBackupEnabled = enabled
         save(context)
     }
 
@@ -70,10 +75,33 @@ object GoogleDriveBackupManager {
         onResult: (Boolean, String) -> Unit = { _, _ -> }
     ) {
         if (!isAutoBackupEnabled) {
-            onResult(false, "Google Drive Backup ist deaktiviert")
+            onResult(false, "Foto-Backup deaktiviert")
             return
         }
+        uploadFileAsync(context, photoBytes, filename, "image/jpeg", onResult)
+    }
 
+    fun uploadClipAsync(
+        context: Context,
+        clipBytes: ByteArray,
+        filename: String = "clip_${System.currentTimeMillis()}.webm",
+        mimeType: String = "video/webm",
+        onResult: (Boolean, String) -> Unit = { _, _ -> }
+    ) {
+        if (!isClipBackupEnabled) {
+            onResult(false, "Clip-Backup deaktiviert")
+            return
+        }
+        uploadFileAsync(context, clipBytes, filename, mimeType, onResult)
+    }
+
+    fun uploadFileAsync(
+        context: Context,
+        fileBytes: ByteArray,
+        filename: String,
+        mimeType: String = "image/jpeg",
+        onResult: (Boolean, String) -> Unit = { _, _ -> }
+    ) {
         val account = GoogleSignIn.getLastSignedInAccount(context)
         if (account == null || account.account == null) {
             lastBackupStatus = "Fehler: Kein Google Account verbunden"
@@ -97,12 +125,12 @@ object GoogleDriveBackupManager {
                 val conn = url.openConnection() as HttpURLConnection
                 conn.requestMethod = "POST"
                 conn.doOutput = true
-                conn.connectTimeout = 15000
-                conn.readTimeout = 15000
+                conn.connectTimeout = 20000
+                conn.readTimeout = 20000
                 conn.setRequestProperty("Authorization", "Bearer $token")
                 conn.setRequestProperty("Content-Type", "multipart/related; boundary=$boundary")
 
-                val metaJson = """{"name":"$filename","mimeType":"image/jpeg"}"""
+                val metaJson = """{"name":"$filename","mimeType":"$mimeType"}"""
 
                 val os: OutputStream = conn.outputStream
                 val writer = os.writer(Charsets.UTF_8)
@@ -116,9 +144,9 @@ object GoogleDriveBackupManager {
 
                 // Part 2: Media
                 writer.write("--$boundary\r\n")
-                writer.write("Content-Type: image/jpeg\r\n\r\n")
+                writer.write("Content-Type: $mimeType\r\n\r\n")
                 writer.flush()
-                os.write(photoBytes)
+                os.write(fileBytes)
                 os.flush()
 
                 // End
@@ -128,7 +156,7 @@ object GoogleDriveBackupManager {
 
                 val code = conn.responseCode
                 if (code in 200..299) {
-                    val sizeKb = photoBytes.size / 1024
+                    val sizeKb = fileBytes.size / 1024
                     lastBackupStatus = "Erfolgreich: $filename ($sizeKb KB)"
                     Log.i(TAG, "Uploaded $filename to Google Drive successfully ($sizeKb KB)")
                     onResult(true, "Gesichert auf Google Drive")
