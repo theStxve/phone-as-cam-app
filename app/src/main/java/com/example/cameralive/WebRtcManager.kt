@@ -110,8 +110,15 @@ class WebRtcManager(private val context: Context) {
             networkIgnoreMask = 0 // Do not ignore VPN or any interface!
         }
 
+        val audioDeviceModule = org.webrtc.audio.JavaAudioDeviceModule.builder(context)
+            .setAudioSource(android.media.MediaRecorder.AudioSource.MIC)
+            .setUseHardwareAcousticEchoCanceler(false)
+            .setUseHardwareNoiseSuppressor(false)
+            .createAudioDeviceModule()
+
         peerConnectionFactory = PeerConnectionFactory.builder()
             .setOptions(pcfOptions)
+            .setAudioDeviceModule(audioDeviceModule)
             .setVideoEncoderFactory(encoderFactory)
             .setVideoDecoderFactory(decoderFactory)
             .createPeerConnectionFactory()
@@ -122,8 +129,13 @@ class WebRtcManager(private val context: Context) {
         videoSource?.capturerObserver?.onCapturerStarted(true)
         videoTrack = peerConnectionFactory?.createVideoTrack("ARDAMSv0", videoSource)
 
-        // Base audio (minimal constraints – used as fallback; each handleOffer creates a fresh session track)
-        val audioConstraints = MediaConstraints()
+        // Base audio
+        val audioConstraints = MediaConstraints().apply {
+            mandatory.add(MediaConstraints.KeyValuePair("googEchoCancellation", "false"))
+            mandatory.add(MediaConstraints.KeyValuePair("googAutoGainControl", "true"))
+            mandatory.add(MediaConstraints.KeyValuePair("googHighpassFilter", "false"))
+            mandatory.add(MediaConstraints.KeyValuePair("googNoiseSuppression", "false"))
+        }
         baseAudioSource = peerConnectionFactory?.createAudioSource(audioConstraints)
         baseAudioTrack = peerConnectionFactory?.createAudioTrack("ARDAMSa0", baseAudioSource)
     }
@@ -226,10 +238,11 @@ class WebRtcManager(private val context: Context) {
 
         // Create fresh session audio with high-quality constraints for this peer connection
         val audioConstraints = MediaConstraints().apply {
-            mandatory.add(MediaConstraints.KeyValuePair("googEchoCancellation", "true"))
+            mandatory.add(MediaConstraints.KeyValuePair("googEchoCancellation", "false"))
             mandatory.add(MediaConstraints.KeyValuePair("googAutoGainControl", "true"))
-            mandatory.add(MediaConstraints.KeyValuePair("googHighpassFilter", "true"))
-            mandatory.add(MediaConstraints.KeyValuePair("googNoiseSuppression", "true"))
+            mandatory.add(MediaConstraints.KeyValuePair("googHighpassFilter", "false"))
+            mandatory.add(MediaConstraints.KeyValuePair("googNoiseSuppression", "false"))
+            mandatory.add(MediaConstraints.KeyValuePair("googTypingNoiseDetection", "false"))
         }
         val freshAudioSource = factory.createAudioSource(audioConstraints)
         sessionAudioSource = freshAudioSource

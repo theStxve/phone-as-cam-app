@@ -1078,7 +1078,17 @@ class CameraStreamingService : LifecycleService(), CameraController, LocationLis
                     val read = rec.read(buffer, 0, buffer.size)
                     if (read > 0) {
                         val chunk = ByteArray(read)
-                        System.arraycopy(buffer, 0, chunk, 0, read)
+                        // Apply 2.5x gain boost with soft limiter to 16-bit PCM samples
+                        for (i in 0 until read step 2) {
+                            if (i + 1 < read) {
+                                val low = buffer[i].toInt() and 0xFF
+                                val high = buffer[i + 1].toInt()
+                                val sample = ((high shl 8) or low).toShort()
+                                val boosted = (sample * 2.5f).toInt().coerceIn(-32768, 32767).toShort()
+                                chunk[i] = (boosted.toInt() and 0xFF).toByte()
+                                chunk[i + 1] = ((boosted.toInt() shr 8) and 0xFF).toByte()
+                            }
+                        }
                         mjpegServer?.broadcastAudio(chunk)
                     } else if (read < 0) {
                         break
@@ -1251,6 +1261,23 @@ class CameraStreamingService : LifecycleService(), CameraController, LocationLis
             Log.e(TAG, "Error setting megafon state", e)
         }
         return isMegafonActive.get()
+    }
+
+    fun setSpeakerVolumePercent(percent: Int) {
+        try {
+            val audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+            val clamped = percent.coerceIn(0, 100)
+            val maxMusic = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+            val targetMusic = Math.round((clamped / 100f) * maxMusic).toInt()
+            audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, targetMusic, 0)
+
+            val maxVoice = audioManager.getStreamMaxVolume(AudioManager.STREAM_VOICE_CALL)
+            val targetVoice = Math.round((clamped / 100f) * maxVoice).toInt()
+            audioManager.setStreamVolume(AudioManager.STREAM_VOICE_CALL, targetVoice, 0)
+            Log.i(TAG, "Speaker volume set to $clamped% (Music: $targetMusic/$maxMusic, Voice: $targetVoice/$maxVoice)")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to set speaker volume", e)
+        }
     }
 
     @Synchronized

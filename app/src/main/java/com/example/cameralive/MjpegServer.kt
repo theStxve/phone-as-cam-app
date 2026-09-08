@@ -258,6 +258,16 @@ class MjpegServer(port: Int, private val controller: CameraController) : NanoHTT
                             </label>
                             <div id="sensorInfo" style="font-size: 10px; color: #4dabf7; margin-top: 4px; text-align: right;" title="Wird bei normalem Foto für maximale Auflösung genutzt">🔍 $bestSensorLabel</div>
                             <div style="border-top: 1px solid rgba(255,255,255,0.15); margin: 8px 0;"></div>
+                            <div style="font-weight: bold; margin-bottom: 6px; color: #aaa; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px;">🔊 Audio &amp; Lautstärke</div>
+                            <label>🎤 Mikrofon: <input type="range" id="volSlider" min="0" max="500" step="10" value="250" oninput="onVolumeChange(this.value)"> <span id="volVal" style="color: #4dabf7; width: 42px;">250%</span></label>
+                            <label style="margin-top: 4px;">📢 Megafon: <input type="range" id="megafonVolSlider" min="0" max="100" step="5" value="100" oninput="onMegafonVolumeChange(this.value)"> <span id="megafonVolVal" style="color: #ff6b6b; width: 42px;">100%</span></label>
+                            <div style="display: flex; align-items: center; gap: 8px; margin-top: 5px; font-size: 11px;">
+                                <span>🎤 Pegel:</span>
+                                <div style="flex: 1; height: 8px; background: #222; border-radius: 4px; overflow: hidden; border: 1px solid rgba(255,255,255,0.2);">
+                                    <div id="vuMeter" style="width: 0%; height: 100%; background: linear-gradient(90deg, #28a745 60%, #ffc107 85%, #dc3545 100%); transition: width 0.05s ease-out;"></div>
+                                </div>
+                            </div>
+                            <div style="border-top: 1px solid rgba(255,255,255,0.15); margin: 8px 0;"></div>
                             <div style="font-weight: bold; margin-bottom: 6px; color: #aaa; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px;">📍 GPS &amp; Standort</div>
                             <label>GPS-Intervall:
                                 <select id="gpsSelect" onchange="onGpsIntervalChange(this.value)">
@@ -298,8 +308,72 @@ class MjpegServer(port: Int, private val controller: CameraController) : NanoHTT
                             let selfieActive = ${if (isSelfieOn) "true" else "false"};
                             let currentRotation = 0;
                             let isAudioEnabled = false;
+                            let userVolume = 2.5;
+                            let megafonVolume = 100;
                             let audioCtx = null;
+                            let audioGainNode = null;
+                            let audioAnalyser = null;
+                            let audioSourceNode = null;
+                            let vuAnimationId = null;
                             let pcmAbortController = null;
+
+                            function initAudioPipeline() {
+                                if (!audioCtx) {
+                                    try {
+                                        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+                                    } catch (e) {}
+                                }
+                                if (audioCtx && !audioGainNode) {
+                                    audioGainNode = audioCtx.createGain();
+                                    audioGainNode.gain.value = isAudioEnabled ? userVolume : 0.0;
+                                    audioAnalyser = audioCtx.createAnalyser();
+                                    audioAnalyser.fftSize = 128;
+                                    audioAnalyser.smoothingTimeConstant = 0.5;
+                                    audioGainNode.connect(audioAnalyser);
+                                    audioAnalyser.connect(audioCtx.destination);
+                                    startVuMeter();
+                                }
+                            }
+
+                            function startVuMeter() {
+                                if (vuAnimationId) return;
+                                const vuMeter = document.getElementById('vuMeter');
+                                const dataArray = new Uint8Array(64);
+                                function update() {
+                                    if (audioAnalyser && isAudioEnabled) {
+                                        audioAnalyser.getByteFrequencyData(dataArray);
+                                        let sum = 0;
+                                        for (let i = 0; i < dataArray.length; i++) {
+                                            sum += dataArray[i];
+                                        }
+                                        const avg = sum / dataArray.length;
+                                        const pct = Math.min(100, Math.round((avg / 110) * 100));
+                                        if (vuMeter) vuMeter.style.width = pct + '%';
+                                    } else {
+                                        if (vuMeter) vuMeter.style.width = '0%';
+                                    }
+                                    vuAnimationId = requestAnimationFrame(update);
+                                }
+                                vuAnimationId = requestAnimationFrame(update);
+                            }
+
+                            function onVolumeChange(val) {
+                                userVolume = val / 100.0;
+                                const volValEl = document.getElementById('volVal');
+                                if (volValEl) volValEl.textContent = val + '%';
+                                if (audioGainNode && audioCtx) {
+                                    if (isAudioEnabled) {
+                                        audioGainNode.gain.setTargetAtTime(userVolume, audioCtx.currentTime, 0.02);
+                                    }
+                                }
+                            }
+
+                            function onMegafonVolumeChange(val) {
+                                megafonVolume = parseInt(val, 10);
+                                const megaVolValEl = document.getElementById('megafonVolVal');
+                                if (megaVolValEl) megaVolValEl.textContent = val + '%';
+                                fetch('/set_speaker_volume?vol=' + megafonVolume, { method: 'POST' }).catch(() => {});
+                            }
 
                             // --- Remote Photo Capture & Instant Download ---
                             async function takePhoto() {
@@ -412,34 +486,30 @@ class MjpegServer(port: Int, private val controller: CameraController) : NanoHTT
                             // --- Audio Toggle ---
                             audioBtn.addEventListener('click', async () => {
                                 isAudioEnabled = !isAudioEnabled;
+                                initAudioPipeline();
                                 
                                 // Unlock AudioContext on user click gesture (required for Safari & Chrome)
-                                if (!audioCtx) {
-                                    try {
-                                        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-                                    } catch (e) {}
-                                }
                                 if (audioCtx && audioCtx.state === 'suspended') {
                                     try { await audioCtx.resume(); } catch (e) {}
                                 }
 
                                 if (isAudioEnabled) {
-                                    audioBtn.textContent = '🔊 Ton aus';
+                                    audioBtn.textContent = '🔊 Ton an';
                                     audioBtn.classList.remove('muted');
-
-                                    // Unmute video element for WebRTC audio
-                                    videoEl.muted = false;
-                                    videoEl.volume = 1.0;
-                                    videoEl.play().catch(e => console.log('videoEl play:', e));
+                                    if (audioGainNode && audioCtx) {
+                                        audioGainNode.gain.setTargetAtTime(userVolume, audioCtx.currentTime, 0.02);
+                                    }
 
                                     // If WebRTC is not connected (Snapshot fallback), start PCM stream
                                     if (!webrtcConnected) {
                                         startPcmFallbackAudio();
                                     }
                                 } else {
-                                    audioBtn.textContent = '🔇 Ton an';
+                                    audioBtn.textContent = '🔇 Ton aus';
                                     audioBtn.classList.add('muted');
-                                    videoEl.muted = true;
+                                    if (audioGainNode && audioCtx) {
+                                        audioGainNode.gain.setTargetAtTime(0, audioCtx.currentTime, 0.02);
+                                    }
                                     stopPcmFallbackAudio();
                                 }
                             });
@@ -603,6 +673,23 @@ class MjpegServer(port: Int, private val controller: CameraController) : NanoHTT
 
                                     pc.ontrack = (event) => {
                                         console.log('WebRTC track received:', event.track.kind, event.track.id);
+                                        if (event.track.kind === 'audio') {
+                                            initAudioPipeline();
+                                            try {
+                                                const audioStream = (event.streams && event.streams[0]) ? event.streams[0] : new MediaStream([event.track]);
+                                                if (audioSourceNode) {
+                                                    try { audioSourceNode.disconnect(); } catch (e) {}
+                                                }
+                                                if (audioCtx && audioGainNode) {
+                                                    audioSourceNode = audioCtx.createMediaStreamSource(audioStream);
+                                                    audioSourceNode.connect(audioGainNode);
+                                                    console.log('WebRTC Audio Track connected to AudioContext GainNode!');
+                                                }
+                                            } catch (e) {
+                                                console.warn('Audio node connection error:', e);
+                                            }
+                                        }
+
                                         const incomingStream = (event.streams && event.streams[0]) ? event.streams[0] : null;
                                         if (incomingStream) {
                                             if (videoEl.srcObject !== incomingStream) {
@@ -617,10 +704,6 @@ class MjpegServer(port: Int, private val controller: CameraController) : NanoHTT
                                             if (!stream.getTracks().some(t => t.id === event.track.id)) {
                                                 stream.addTrack(event.track);
                                             }
-                                        }
-                                        if (isAudioEnabled) {
-                                            videoEl.muted = false;
-                                            videoEl.volume = 1.0;
                                         }
                                         videoEl.play().catch(e => console.log('videoEl play:', e));
 
@@ -647,21 +730,18 @@ class MjpegServer(port: Int, private val controller: CameraController) : NanoHTT
                                             statusText.textContent = '● WebRTC H.264 (<100ms)';
                                             videoEl.style.display = 'block';
                                             mainImg.style.display = 'none';
-                                            if (isAudioEnabled) {
-                                                videoEl.muted = false;
-                                                videoEl.volume = 1.0;
-                                            }
                                             videoEl.play().catch(e => console.log('videoEl play:', e));
-                                            try {
-                                                pc.getReceivers().forEach(r => {
-                                                    if ('playoutDelayHint' in r) r.playoutDelayHint = 0;
-                                                    if ('jitterBufferTarget' in r) r.jitterBufferTarget = 0;
-                                                });
-                                            } catch (e) {}
-                                        } else if (pc.iceConnectionState === 'failed') {
-                                            console.warn('ICE connection failed, checking fallback');
-                                            if (!webrtcConnected) {
+                                        } else if (pc.iceConnectionState === 'disconnected' || pc.iceConnectionState === 'failed') {
+                                            console.warn('ICE connection state:', pc.iceConnectionState);
+                                            if (webrtcConnected) {
+                                                webrtcConnected = false;
                                                 fallbackToPolling();
+                                                setTimeout(() => {
+                                                    if (!webrtcConnected) {
+                                                        console.log('Auto-reconnecting WebRTC...');
+                                                        startWebRtc();
+                                                    }
+                                                }, 1500);
                                             }
                                         }
                                     };
@@ -698,23 +778,21 @@ class MjpegServer(port: Int, private val controller: CameraController) : NanoHTT
                                         } catch (e) {}
                                     }, 1500);
 
-                                    // Ultra-fast auto catch-up: Keep video playback tightly locked to live edge (< 35ms)
+                                    // Ultra-fast auto catch-up: Keep video playback tightly locked to live edge without dropping audio decoder clock
                                     setInterval(() => {
                                          if (!videoEl || !webrtcConnected) return;
                                          try {
                                              if (videoEl.buffered && videoEl.buffered.length > 0) {
                                                  const liveEnd = videoEl.buffered.end(videoEl.buffered.length - 1);
                                                  const lag = liveEnd - videoEl.currentTime;
-                                                 if (lag > 0.12) {
-                                                     videoEl.currentTime = liveEnd - 0.01;
-                                                 } else if (lag > 0.03) {
-                                                     videoEl.playbackRate = 1.06;
+                                                 if (lag > 0.08) {
+                                                     videoEl.playbackRate = 1.05;
                                                  } else {
                                                      videoEl.playbackRate = 1.0;
                                                  }
                                              }
                                          } catch (e) {}
-                                     }, 40);
+                                     }, 100);
 
                                     // Create Offer
                                     const offer = await pc.createOffer();
@@ -813,9 +891,7 @@ class MjpegServer(port: Int, private val controller: CameraController) : NanoHTT
 
                             async function startPcmFallbackAudio() {
                                 stopPcmFallbackAudio();
-                                if (!audioCtx) {
-                                    try { audioCtx = new (window.AudioContext || window.webkitAudioContext)(); } catch(e){}
-                                }
+                                initAudioPipeline();
                                 if (audioCtx && audioCtx.state === 'suspended') {
                                     try { await audioCtx.resume(); } catch(e){}
                                 }
@@ -824,7 +900,7 @@ class MjpegServer(port: Int, private val controller: CameraController) : NanoHTT
                                     const resp = await fetch('/mic_stream', { signal: pcmAbortController.signal });
                                     const reader = resp.body.getReader();
                                     const sampleRate = 44100;
-                                    let nextPlayTime = audioCtx.currentTime;
+                                    let nextPlayTime = (audioCtx ? audioCtx.currentTime : 0);
 
                                     while (isAudioEnabled) {
                                         const { done, value } = await reader.read();
@@ -838,11 +914,16 @@ class MjpegServer(port: Int, private val controller: CameraController) : NanoHTT
                                             float32[i] = int16[i] / 32768.0;
                                         }
 
+                                        if (!audioCtx) break;
                                         const buf = audioCtx.createBuffer(1, numSamples, sampleRate);
                                         buf.copyToChannel(float32, 0);
                                         const src = audioCtx.createBufferSource();
                                         src.buffer = buf;
-                                        src.connect(audioCtx.destination);
+                                        if (audioGainNode) {
+                                            src.connect(audioGainNode);
+                                        } else {
+                                            src.connect(audioCtx.destination);
+                                        }
 
                                         const now = audioCtx.currentTime;
                                         if (nextPlayTime < now) {
@@ -1346,6 +1427,15 @@ class MjpegServer(port: Int, private val controller: CameraController) : NanoHTT
                     val active = session.parms["active"] == "true"
                     val result = controller.setMegafon(active)
                     val res = newFixedLengthResponse(Response.Status.OK, "application/json", "{\"active\": $result}")
+                    res.addHeader("Access-Control-Allow-Origin", "*")
+                    return res
+                }
+            }
+            "/set_speaker_volume" -> {
+                if (session.method == Method.POST) {
+                    val volPercent = session.parms["vol"]?.toIntOrNull() ?: 100
+                    service?.setSpeakerVolumePercent(volPercent)
+                    val res = newFixedLengthResponse(Response.Status.OK, "application/json", "{\"volume\": $volPercent}")
                     res.addHeader("Access-Control-Allow-Origin", "*")
                     return res
                 }
