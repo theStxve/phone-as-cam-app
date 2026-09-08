@@ -43,11 +43,16 @@ import androidx.camera.core.resolutionselector.ResolutionStrategy
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.core.app.ActivityCompat
 import androidx.core.app.NotificationCompat
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.graphics.Matrix
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.LifecycleService
 import java.io.ByteArrayOutputStream
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
@@ -91,6 +96,11 @@ class CameraStreamingService : LifecycleService(), CameraController, LocationLis
     @Volatile private var cameraRetryPending = false
     @Volatile private var backNv21Buffer: ByteArray? = null
     @Volatile private var frontNv21Buffer: ByteArray? = null
+
+    @Volatile private var isPhotoRequested = false
+    private val photoLock = Any()
+    @Volatile private var latestCapturedPhoto: ByteArray? = null
+    @Volatile private var photoLatch: CountDownLatch? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -175,6 +185,26 @@ class CameraStreamingService : LifecycleService(), CameraController, LocationLis
         if (prev != validRes) {
             android.os.Handler(mainLooper).post { startCamera() }
         }
+    }
+
+    fun takeHighQualityPhoto(): ByteArray? {
+        val latch = CountDownLatch(1)
+        synchronized(photoLock) {
+            latestCapturedPhoto = null
+            photoLatch = latch
+            isPhotoRequested = true
+        }
+        try {
+            latch.await(3500, TimeUnit.MILLISECONDS)
+        } catch (e: Exception) {
+            Log.w(TAG, "Photo capture timeout", e)
+        } finally {
+            synchronized(photoLock) {
+                isPhotoRequested = false
+                photoLatch = null
+            }
+        }
+        return latestCapturedPhoto
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -559,6 +589,53 @@ class CameraStreamingService : LifecycleService(), CameraController, LocationLis
                 }
             }
             
+            // High-Quality Photo Capture Trigger: process and rotate frame at 95% JPEG quality
+            if (isPhotoRequested) {
+                try {
+                    val yuvImage = YuvImage(nv21, ImageFormat.NV21, width, height, null)
+                    val rawOut = ByteArrayOutputStream()
+                    yuvImage.compressToJpeg(Rect(0, 0, width, height), 95, rawOut)
+                    val rawBytes = rawOut.toByteArray()
+
+                    val baseRotation = imageProxy.imageInfo.rotationDegrees
+                    val targetRotation = if (currentLensFacing == CameraSelector.LENS_FACING_FRONT) {
+                        (baseRotation + 90) % 360
+                    } else {
+                        (baseRotation + 270) % 360
+                    }
+
+                    val finalPhotoBytes = if (targetRotation != 0) {
+                        val bmp = BitmapFactory.decodeByteArray(rawBytes, 0, rawBytes.size)
+                        if (bmp != null) {
+                            val matrix = Matrix().apply { postRotate(targetRotation.toFloat()) }
+                            val rotatedBmp = Bitmap.createBitmap(bmp, 0, 0, bmp.width, bmp.height, matrix, true)
+                            val rotOut = ByteArrayOutputStream()
+                            rotatedBmp.compress(Bitmap.CompressFormat.JPEG, 95, rotOut)
+                            if (rotatedBmp != bmp) rotatedBmp.recycle()
+                            bmp.recycle()
+                            rotOut.toByteArray()
+                        } else {
+                            rawBytes
+                        }
+                    } else {
+                        rawBytes
+                    }
+
+                    synchronized(photoLock) {
+                        latestCapturedPhoto = finalPhotoBytes
+                        isPhotoRequested = false
+                        photoLatch?.countDown()
+                    }
+                    Log.i(TAG, "High-Quality photo captured successfully: ${finalPhotoBytes.size / 1024} KB")
+                } catch (e: Exception) {
+                    Log.e(TAG, "Error capturing photo frame", e)
+                    synchronized(photoLock) {
+                        isPhotoRequested = false
+                        photoLatch?.countDown()
+                    }
+                }
+            }
+
             if (isFront) {
                 val yuvImage = YuvImage(nv21, ImageFormat.NV21, width, height, null)
                 val out = ByteArrayOutputStream()

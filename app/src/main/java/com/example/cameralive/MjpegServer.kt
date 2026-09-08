@@ -140,6 +140,8 @@ class MjpegServer(port: Int, private val controller: CameraController) : NanoHTT
                             .btn-selfie.active { background: #e8590c; box-shadow: 0 0 10px rgba(232, 89, 12, 0.6); }
                             .btn-audio { background: #28a745; }
                             .btn-audio.muted { background: #6c757d; }
+                            .btn-photo { background: #198754; }
+                            .btn-photo:active { background: #146c43; }
                             .btn-megafon { background: #d63384; }
                             .btn-megafon.active { background: #dc3545; box-shadow: 0 0 12px #dc3545; animation: megaPulse 1.2s infinite; }
                             @keyframes megaPulse { 0% { transform: scale(1); } 50% { transform: scale(1.08); } 100% { transform: scale(1); } }
@@ -202,6 +204,7 @@ class MjpegServer(port: Int, private val controller: CameraController) : NanoHTT
                         </div>
                         
                         <div class="controls">
+                            <button class="btn-photo" id="photoBtn" onclick="takePhoto()" title="Foto in voller Qualität aufnehmen und herunterladen">📸 Foto</button>
                             <button class="$flashClass" id="flashBtn" onclick="toggleFlash()" title="Taschenlampe an/aus">💡</button>
                             <button class="$wideClass" id="wideBtn" onclick="toggleWideAngle()" title="Weitwinkel (0.5x / Ultra-Wide)">$wideText</button>
                             <button class="btn-switch" id="switchBtn" onclick="switchCamera()" title="Kamera wechseln (Hauptkamera / Frontkamera)">$switchCamText</button>
@@ -229,6 +232,35 @@ class MjpegServer(port: Int, private val controller: CameraController) : NanoHTT
                             let isAudioEnabled = false;
                             let audioCtx = null;
                             let pcmAbortController = null;
+
+                            // --- Remote Photo Capture & Instant Download ---
+                            async function takePhoto() {
+                                const btn = document.getElementById('photoBtn');
+                                const origText = btn.textContent;
+                                btn.textContent = '⏳ Aufnahme...';
+                                btn.disabled = true;
+                                try {
+                                    const res = await fetch('/capture');
+                                    if (res.ok) {
+                                        const blob = await res.blob();
+                                        const url = URL.createObjectURL(blob);
+                                        const a = document.createElement('a');
+                                        a.href = url;
+                                        a.download = 'capture_' + Date.now() + '.jpg';
+                                        document.body.appendChild(a);
+                                        a.click();
+                                        document.body.removeChild(a);
+                                        URL.revokeObjectURL(url);
+                                    } else {
+                                        alert('Fehler bei der Fotoaufnahme (Kamera möglicherweise ausgelastet).');
+                                    }
+                                } catch (e) {
+                                    alert('Foto-Fehler: ' + e);
+                                } finally {
+                                    btn.textContent = origText;
+                                    btn.disabled = false;
+                                }
+                            }
 
                             // --- Rotate Stream ---
                             function rotateStream() {
@@ -1007,6 +1039,19 @@ class MjpegServer(port: Int, private val controller: CameraController) : NanoHTT
                 response.addHeader("Cache-Control", "no-cache, no-store, must-revalidate")
                 response.addHeader("Pragma", "no-cache")
                 return response
+            }
+            "/capture" -> {
+                val photo = service?.takeHighQualityPhoto()
+                if (photo != null) {
+                    val timestamp = System.currentTimeMillis()
+                    val response = newFixedLengthResponse(Response.Status.OK, "image/jpeg", ByteArrayInputStream(photo), photo.size.toLong())
+                    response.addHeader("Content-Disposition", "attachment; filename=\"capture_$timestamp.jpg\"")
+                    response.addHeader("Cache-Control", "no-cache, no-store, must-revalidate")
+                    response.addHeader("Access-Control-Allow-Origin", "*")
+                    return response
+                } else {
+                    return newFixedLengthResponse(Response.Status.SERVICE_UNAVAILABLE, "text/plain", "Could not capture photo")
+                }
             }
             "/location" -> {
                 val json = "{\"lat\": $currentLat, \"lng\": $currentLng}"
