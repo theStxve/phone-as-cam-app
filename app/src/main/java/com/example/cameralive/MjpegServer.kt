@@ -360,7 +360,7 @@ class MjpegServer(port: Int, private val controller: CameraController) : NanoHTT
                                 <hr class="section-divider">
                                 <div class="section-label">🔊 Audio &amp; Lautstärke</div>
                                 <div class="setting-row">
-                                    <label>🎤 Mikrofon: <input type="range" id="volSlider" min="0" max="300" step="10" value="200" oninput="onVolumeChange(this.value)"> <span class="val-badge" id="volVal" style="color:#4dabf7;">200%</span></label>
+                                    <label>🎤 Mikrofon: <input type="range" id="volSlider" min="0" max="300" step="10" value="250" oninput="onVolumeChange(this.value)"> <span class="val-badge" id="volVal" style="color:#4dabf7;">250%</span></label>
                                 </div>
                                 <div class="setting-row">
                                     <label>📢 Megafon: <input type="range" id="megafonVolSlider" min="0" max="100" step="5" value="100" oninput="onMegafonVolumeChange(this.value)"> <span class="val-badge" id="megafonVolVal" style="color:#ff6b6b;">100%</span></label>
@@ -439,7 +439,7 @@ class MjpegServer(port: Int, private val controller: CameraController) : NanoHTT
                             let selfieActive = ${if (isSelfieOn) "true" else "false"};
                             let currentRotation = 0;
                             let isAudioEnabled = false;
-                            let userVolume = 2.0;
+                            let userVolume = 2.5;
                             let megafonVolume = 100;
                             let audioCtx = null;
                             let audioGainNode = null;
@@ -480,9 +480,34 @@ class MjpegServer(port: Int, private val controller: CameraController) : NanoHTT
                                 const curve = new Float32Array(samples);
                                 for (let i = 0; i < samples; ++i) {
                                     const x = (i * 2) / samples - 1;
-                                    curve[i] = Math.tanh(x);
+                                    // Soft saturation curve: enables full 2.5x volume boost while softly rounding extreme peaks
+                                    curve[i] = Math.tanh(x * 1.5) * 1.8;
                                 }
                                 return curve;
+                            }
+
+                            async function getMicStream() {
+                                if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+                                    try {
+                                        return await navigator.mediaDevices.getUserMedia({
+                                            audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
+                                        });
+                                    } catch (e) {
+                                        if (e.name === 'NotAllowedError' || e.name === 'PermissionDeniedError' || e.name === 'NotFoundError' || e.name === 'NotReadableError') {
+                                            throw e;
+                                        }
+                                        return await navigator.mediaDevices.getUserMedia({ audio: true });
+                                    }
+                                }
+                                const legacyGUM = navigator.getUserMedia || navigator.webkitGetUserMedia || navigator.mozGetUserMedia || navigator.msGetUserMedia;
+                                if (legacyGUM) {
+                                    return new Promise((resolve, reject) => {
+                                        legacyGUM.call(navigator, { audio: true }, resolve, reject);
+                                    });
+                                }
+                                const err = new Error('INSECURE_ORIGIN');
+                                err.name = 'InsecureOriginError';
+                                throw err;
                             }
 
                             function initAudioPipeline() {
@@ -492,7 +517,7 @@ class MjpegServer(port: Int, private val controller: CameraController) : NanoHTT
                                     } catch (e) {}
                                 }
                                 if (audioCtx && !audioGainNode) {
-                                    // 1. Gain Node (Starts at clean 100%)
+                                    // 1. Gain Node (Starts at clean 250%)
                                     audioGainNode = audioCtx.createGain();
                                     audioGainNode.gain.value = isAudioEnabled ? userVolume : 0.0;
 
@@ -545,7 +570,7 @@ class MjpegServer(port: Int, private val controller: CameraController) : NanoHTT
                             function showBraveHelpModal() {
                                 const streamUrlInput = document.getElementById('streamUrlInput');
                                 if (streamUrlInput) {
-                                    streamUrlInput.value = 'http://' + window.location.host;
+                                    streamUrlInput.value = window.location.origin;
                                 }
                                 const modal = document.getElementById('braveHelpModal');
                                 if (modal) modal.style.display = 'flex';
@@ -768,20 +793,8 @@ class MjpegServer(port: Int, private val controller: CameraController) : NanoHTT
                                 const megafonBtn = document.getElementById('megafonBtn');
 
                                 if (isMegafonActive) {
-                                    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-                                        showBraveHelpModal();
-                                        isMegafonActive = false;
-                                        return;
-                                    }
-
                                     try {
-                                        megafonStream = await navigator.mediaDevices.getUserMedia({
-                                            audio: {
-                                                echoCancellation: true,
-                                                noiseSuppression: true,
-                                                autoGainControl: true
-                                            }
-                                        });
+                                        megafonStream = await getMicStream();
 
                                         // Auto-duck incoming stream to prevent acoustic feedback howl
                                         if (audioGainNode && audioCtx) {
@@ -810,11 +823,11 @@ class MjpegServer(port: Int, private val controller: CameraController) : NanoHTT
                                         megafonBtn.classList.remove('active');
                                         megafonBtn.innerHTML = '📢<span class="btn-label-desktop"> Megafon</span>';
                                         if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
-                                            alert('🎤 Mikrofon-Zugriff verweigert.\n\nKlicke auf das 🔒 Schloss-Symbol in der Adressleiste → "Mikrofon" → "Erlauben", dann nochmal Megafon drücken.');
+                                            alert('🎤 Mikrofon-Zugriff im Browser verweigert!\n\n1. Klicke links in der Adressleiste auf das Schloss 🔒 bzw. Kamera/Mikrofon-Icon.\n2. Ändere "Mikrofon" auf "Erlauben".\n3. Lade die Seite neu.');
                                         } else if (err.name === 'NotFoundError') {
-                                            alert('❌ Kein Mikrofon gefunden. Bitte ein Mikrofon anschließen.');
+                                            alert('❌ Kein Mikrofon an diesem PC / Gerät gefunden.');
                                         } else if (err.name === 'NotReadableError') {
-                                            alert('⚠️ Mikrofon wird von einer anderen App belegt (z.B. Discord). Bitte schließe diese App zuerst.');
+                                            alert('⚠️ Mikrofon wird gerade von einer anderen App belegt (z.B. Discord/Teams).');
                                         } else {
                                             showBraveHelpModal();
                                         }
