@@ -36,6 +36,8 @@ import androidx.camera.core.Camera
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ConcurrentCamera
 import androidx.camera.core.ImageAnalysis
+import androidx.camera.core.ImageCapture
+import androidx.camera.core.ImageCaptureException
 import androidx.camera.core.UseCaseGroup
 import androidx.camera.core.resolutionselector.AspectRatioStrategy
 import androidx.camera.core.resolutionselector.ResolutionSelector
@@ -101,6 +103,12 @@ class CameraStreamingService : LifecycleService(), CameraController, LocationLis
     private val photoLock = Any()
     @Volatile private var latestCapturedPhoto: ByteArray? = null
     @Volatile private var photoLatch: CountDownLatch? = null
+
+    // Separate quality for on-demand photos (independent of stream quality)
+    val photoJpegQuality = AtomicInteger(95)
+
+    // ImageCapture use-case for native full-sensor-resolution photos
+    @Volatile private var imageCapture: ImageCapture? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -187,7 +195,47 @@ class CameraStreamingService : LifecycleService(), CameraController, LocationLis
         }
     }
 
+    fun setPhotoQuality(quality: Int) {
+        photoJpegQuality.set(quality.coerceIn(10, 100))
+    }
+
     fun takeHighQualityPhoto(): ByteArray? {
+        val capture = imageCapture
+        if (capture != null) {
+            // --- Path A: ImageCapture (native sensor resolution) ---
+            val latch = CountDownLatch(1)
+            var resultBytes: ByteArray? = null
+            val outputStream = ByteArrayOutputStream()
+
+            val outputFileOptions = ImageCapture.OutputFileOptions.Builder(outputStream).build()
+            capture.takePicture(
+                outputFileOptions,
+                cameraExecutor,
+                object : ImageCapture.OnImageSavedCallback {
+                    override fun onImageSaved(outputFileResults: ImageCapture.OutputFileResults) {
+                        resultBytes = outputStream.toByteArray()
+                        latch.countDown()
+                    }
+                    override fun onError(exception: ImageCaptureException) {
+                        Log.e(TAG, "ImageCapture failed, will fallback to stream frame", exception)
+                        latch.countDown()
+                    }
+                }
+            )
+            try {
+                latch.await(5000, TimeUnit.MILLISECONDS)
+            } catch (e: Exception) {
+                Log.w(TAG, "ImageCapture timeout", e)
+            }
+            // If we got bytes from ImageCapture, return them (already JPEG with correct EXIF rotation)
+            if (resultBytes != null && resultBytes.isNotEmpty()) {
+                Log.i(TAG, "Native ImageCapture photo: ${resultBytes.size / 1024} KB")
+                return resultBytes
+            }
+            Log.w(TAG, "ImageCapture returned empty — falling back to stream frame")
+        }
+
+        // --- Path B: Stream-Frame Fallback (limited to streaming resolution) ---
         val latch = CountDownLatch(1)
         synchronized(photoLock) {
             latestCapturedPhoto = null
@@ -197,7 +245,7 @@ class CameraStreamingService : LifecycleService(), CameraController, LocationLis
         try {
             latch.await(3500, TimeUnit.MILLISECONDS)
         } catch (e: Exception) {
-            Log.w(TAG, "Photo capture timeout", e)
+            Log.w(TAG, "Stream-frame photo capture timeout", e)
         } finally {
             synchronized(photoLock) {
                 isPhotoRequested = false
@@ -410,15 +458,24 @@ class CameraStreamingService : LifecycleService(), CameraController, LocationLis
                     }
                 }
 
+            // Build ImageCapture for native full-resolution on-demand photos
+            val primaryImageCapture = ImageCapture.Builder()
+                .setCaptureMode(ImageCapture.CAPTURE_MODE_MAXIMIZE_QUALITY)
+                .setJpegQuality(photoJpegQuality.get())
+                .build()
+
             // 1. Try concurrent camera API ONLY if front camera is requested AND phone supports it
             val concurrentInfos = cameraProvider.availableConcurrentCameraInfos
             if (isFrontCameraEnabled.get() && concurrentInfos.isNotEmpty() && currentLensFacing == CameraSelector.LENS_FACING_BACK) {
                 Log.i(TAG, "Concurrent camera mode active for selfie PiP")
-                try {
+            try {
                     val configs = listOf(
                         ConcurrentCamera.SingleCameraConfig(
                             CameraSelector.DEFAULT_BACK_CAMERA,
-                            UseCaseGroup.Builder().addUseCase(primaryAnalyzer).build(),
+                            UseCaseGroup.Builder()
+                                .addUseCase(primaryAnalyzer)
+                                .addUseCase(primaryImageCapture)
+                                .build(),
                             this
                         ),
                         ConcurrentCamera.SingleCameraConfig(
@@ -429,14 +486,16 @@ class CameraStreamingService : LifecycleService(), CameraController, LocationLis
                     )
                     val concurrentCamera = cameraProvider.bindToLifecycle(configs)
                     activeCamera = concurrentCamera.cameras.firstOrNull()
+                    imageCapture = primaryImageCapture
                     applyTorchState(isFlashlightOn)
                     applyWideAngleIfActive()
                     observeCameraErrors(activeCamera)
-                    Log.i(TAG, "Concurrent cameras bound successfully")
+                    Log.i(TAG, "Concurrent cameras bound successfully (with ImageCapture)")
                     return@addListener
                 } catch (e: Exception) {
                     Log.w(TAG, "Concurrent camera binding failed, falling back to single camera", e)
                     cameraProvider.unbindAll()
+                    imageCapture = null
                 }
             }
 
@@ -461,20 +520,35 @@ class CameraStreamingService : LifecycleService(), CameraController, LocationLis
             }
 
             try {
-                activeCamera = cameraProvider.bindToLifecycle(this, selector, primaryAnalyzer)
+                // Try binding with ImageCapture (full native resolution)
+                activeCamera = cameraProvider.bindToLifecycle(this, selector, primaryAnalyzer, primaryImageCapture)
+                imageCapture = primaryImageCapture
                 if (currentLensFacing == CameraSelector.LENS_FACING_BACK) {
                     applyTorchState(isFlashlightOn)
                     applyWideAngleIfActive()
                 }
                 observeCameraErrors(activeCamera)
-                Log.i(TAG, "Bound primary camera successfully: facing=$currentLensFacing, wideAngle=$isWideAngle")
+                Log.i(TAG, "Bound primary camera + ImageCapture: facing=$currentLensFacing, wideAngle=$isWideAngle")
             } catch (exc: Exception) {
-                Log.e(TAG, "Failed to bind camera with selector: $selector", exc)
+                Log.w(TAG, "Failed to bind with ImageCapture ($selector), retrying without", exc)
+                imageCapture = null
                 try {
-                    currentLensFacing = CameraSelector.LENS_FACING_BACK
-                    activeCamera = cameraProvider.bindToLifecycle(this, CameraSelector.DEFAULT_BACK_CAMERA, primaryAnalyzer)
-                } catch (e2: Exception) {
-                    Log.e(TAG, "Fatal: failed to bind default back camera", e2)
+                    cameraProvider.unbindAll()
+                    activeCamera = cameraProvider.bindToLifecycle(this, selector, primaryAnalyzer)
+                    if (currentLensFacing == CameraSelector.LENS_FACING_BACK) {
+                        applyTorchState(isFlashlightOn)
+                        applyWideAngleIfActive()
+                    }
+                    observeCameraErrors(activeCamera)
+                    Log.i(TAG, "Bound primary camera without ImageCapture (fallback)")
+                } catch (exc2: Exception) {
+                    Log.e(TAG, "Failed to bind camera: $selector", exc2)
+                    try {
+                        currentLensFacing = CameraSelector.LENS_FACING_BACK
+                        activeCamera = cameraProvider.bindToLifecycle(this, CameraSelector.DEFAULT_BACK_CAMERA, primaryAnalyzer)
+                    } catch (e2: Exception) {
+                        Log.e(TAG, "Fatal: failed to bind default back camera", e2)
+                    }
                 }
             }
 

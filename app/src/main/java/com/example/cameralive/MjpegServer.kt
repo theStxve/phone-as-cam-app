@@ -90,6 +90,7 @@ class MjpegServer(port: Int, private val controller: CameraController) : NanoHTT
                 val currentQuality = service?.jpegQuality?.get() ?: 20
                 val currentFps = service?.maxFps?.get() ?: 20
                 val currentRes = service?.targetResolution?.get() ?: "480p"
+                val currentPhotoQuality = service?.photoJpegQuality?.get() ?: 95
                 val isSelfieOn = service?.isFrontCameraEnabled?.get() ?: false
                 val selfieDisplay = if (isSelfieOn) "block" else "none"
                 val selfieBtnClass = if (isSelfieOn) "btn-selfie active" else "btn-selfie"
@@ -200,7 +201,10 @@ class MjpegServer(port: Int, private val controller: CameraController) : NanoHTT
                             </label>
                             <label>FPS: <input type="range" id="fps" min="5" max="60" step="1" value="$currentFps"> <span id="fVal">$currentFps</span></label>
                             <div id="fpsWarning" class="fps-warning" style="display: ${if (currentFps > 20) "block" else "none"};">⚠️ Über 20 FPS steigt der Akkuverbrauch &amp; Hitze an!</div>
-                            <label>Qualität: <input type="range" id="quality" min="10" max="95" step="5" value="$currentQuality"> <span id="qVal">$currentQuality</span></label>
+                            <label>Stream-Qualität: <input type="range" id="quality" min="10" max="95" step="5" value="$currentQuality"> <span id="qVal">$currentQuality</span></label>
+                            <div style="border-top: 1px solid rgba(255,255,255,0.15); margin: 8px 0;"></div>
+                            <div style="font-weight: bold; margin-bottom: 6px; color: #aaa; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px;">📸 Foto-Einstellungen</div>
+                            <label>Foto-Qualität: <input type="range" id="photoQuality" min="50" max="100" step="5" value="$currentPhotoQuality"> <span id="pqVal">$currentPhotoQuality</span></label>
                         </div>
                         
                         <div class="controls">
@@ -850,9 +854,11 @@ class MjpegServer(port: Int, private val controller: CameraController) : NanoHTT
                             // --- Settings & Presets ---
                             const fpsSlider = document.getElementById('fps');
                             const qualitySlider = document.getElementById('quality');
+                            const photoQualitySlider = document.getElementById('photoQuality');
                             const resSelect = document.getElementById('resSelect');
                             const fVal = document.getElementById('fVal');
                             const qVal = document.getElementById('qVal');
+                            const pqVal = document.getElementById('pqVal');
                             const fpsWarning = document.getElementById('fpsWarning');
 
                             function onFpsChange(val) {
@@ -868,6 +874,11 @@ class MjpegServer(port: Int, private val controller: CameraController) : NanoHTT
                                 qVal.textContent = val;
                                 clearPresetActive();
                                 fetch('/settings?quality=' + encodeURIComponent(val), { method: 'POST' }).catch(() => {});
+                            }
+
+                            function onPhotoQualityChange(val) {
+                                pqVal.textContent = val;
+                                fetch('/set_photo_quality?value=' + encodeURIComponent(val), { method: 'POST' }).catch(() => {});
                             }
 
                             function onResChange(val) {
@@ -923,6 +934,8 @@ class MjpegServer(port: Int, private val controller: CameraController) : NanoHTT
                             fpsSlider.addEventListener('change', function() { onFpsChange(this.value); });
                             qualitySlider.addEventListener('input', function() { onQualityChange(this.value); });
                             qualitySlider.addEventListener('change', function() { onQualityChange(this.value); });
+                            photoQualitySlider.addEventListener('input', function() { onPhotoQualityChange(this.value); });
+                            photoQualitySlider.addEventListener('change', function() { onPhotoQualityChange(this.value); });
 
                             // --- Map ---
                             var map = L.map('map', { zoomControl: false, attributionControl: false }).setView([0, 0], 15);
@@ -1051,6 +1064,13 @@ class MjpegServer(port: Int, private val controller: CameraController) : NanoHTT
                     return response
                 } else {
                     return newFixedLengthResponse(Response.Status.SERVICE_UNAVAILABLE, "text/plain", "Could not capture photo")
+                }
+            }
+            "/set_photo_quality" -> {
+                if (session.method == Method.POST) {
+                    val q = session.parms["value"]?.toIntOrNull()?.coerceIn(10, 100) ?: 95
+                    service?.setPhotoQuality(q)
+                    return newFixedLengthResponse(Response.Status.OK, "application/json", "{\"photoQuality\": $q}")
                 }
             }
             "/location" -> {
