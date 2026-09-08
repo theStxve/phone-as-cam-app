@@ -26,6 +26,33 @@ class MjpegServer(port: Int, private val controller: CameraController) : NanoHTT
     private val micClients = mutableListOf<BlockingQueue<ByteArray>>()
     private val isRunning = AtomicBoolean(true)
     
+    // Active web sessions map: sessionId -> lastSeenTimestamp
+    private val activeSessions = java.util.concurrent.ConcurrentHashMap<String, Long>()
+
+    fun recordSessionActivity(sessionId: String) {
+        if (sessionId.isNotBlank()) {
+            activeSessions[sessionId] = System.currentTimeMillis()
+            updateViewerCount()
+        }
+    }
+
+    fun removeSession(sessionId: String) {
+        if (sessionId.isNotBlank()) {
+            activeSessions.remove(sessionId)
+            updateViewerCount()
+        }
+    }
+
+    fun updateViewerCount(): Int {
+        val now = System.currentTimeMillis()
+        activeSessions.entries.removeIf { now - it.value > 6000L }
+        val count = activeSessions.size
+        CameraStreamingService.activeViewers.value = count
+        return count
+    }
+
+    fun getViewerCount(): Int = updateViewerCount()
+
     // Latest frames for fallback polling mode
     val latestBackFrame = AtomicReference<ByteArray>(null)
     val latestFrontFrame = AtomicReference<ByteArray>(null)
@@ -39,6 +66,7 @@ class MjpegServer(port: Int, private val controller: CameraController) : NanoHTT
     var service: CameraStreamingService? = null
 
     fun hasActiveClients(): Boolean {
+        if (getViewerCount() > 0) return true
         if (service?.webRtcManager?.hasActivePeer() == true) return true
         if (hasMicClients()) return true
         val now = System.currentTimeMillis()
@@ -84,6 +112,10 @@ class MjpegServer(port: Int, private val controller: CameraController) : NanoHTT
 
     override fun serve(session: IHTTPSession): Response {
         val uri = session.uri
+        val clientSessionId = session.parms["session_id"] ?: session.headers["x-session-id"]
+        if (!clientSessionId.isNullOrBlank()) {
+            recordSessionActivity(clientSessionId)
+        }
         
         when (uri) {
             "/" -> {
@@ -149,11 +181,13 @@ class MjpegServer(port: Int, private val controller: CameraController) : NanoHTT
                             .btn-megafon.active { background: #dc3545; box-shadow: 0 0 12px #dc3545; animation: megaPulse 1.2s infinite; }
                             @keyframes megaPulse { 0% { transform: scale(1); } 50% { transform: scale(1.08); } 100% { transform: scale(1); } }
                             
-                            .status-badge { position: absolute; top: 15px; left: 15px; z-index: 200; background: rgba(0,0,0,0.75); padding: 8px 14px; border-radius: 20px; font-size: 13px; font-weight: bold; display: flex; align-items: center; gap: 8px; backdrop-filter: blur(4px); }
+                            .top-bar-left { position: absolute; top: 15px; left: 15px; z-index: 200; display: flex; gap: 8px; flex-wrap: wrap; }
+                            .status-badge { background: rgba(0,0,0,0.75); padding: 8px 14px; border-radius: 20px; font-size: 13px; font-weight: bold; display: flex; align-items: center; gap: 8px; backdrop-filter: blur(4px); border: 1px solid rgba(255,255,255,0.15); }
+                            .viewer-badge { background: rgba(0,0,0,0.75); padding: 8px 14px; border-radius: 20px; font-size: 13px; font-weight: bold; display: flex; align-items: center; gap: 6px; backdrop-filter: blur(4px); border: 1px solid rgba(255,255,255,0.15); color: #fff; }
                             .dot { width: 10px; height: 10px; border-radius: 50%; background: #ffc107; display: inline-block; }
                             .dot.live { background: #28a745; box-shadow: 0 0 8px #28a745; }
                             
-                            .settings { position: absolute; top: 55px; left: 15px; z-index: 200; background: rgba(0,0,0,0.8); padding: 12px 14px; border-radius: 10px; font-size: 12px; backdrop-filter: blur(6px); max-width: 250px; border: 1px solid rgba(255,255,255,0.15); box-shadow: 0 4px 15px rgba(0,0,0,0.5); }
+                            .settings { position: absolute; top: 60px; left: 15px; z-index: 200; background: rgba(0,0,0,0.8); padding: 12px 14px; border-radius: 10px; font-size: 12px; backdrop-filter: blur(6px); max-width: 250px; border: 1px solid rgba(255,255,255,0.15); box-shadow: 0 4px 15px rgba(0,0,0,0.5); }
                             .settings label { display: flex; justify-content: space-between; align-items: center; margin-bottom: 7px; }
                             .settings input[type=range] { width: 110px; vertical-align: middle; }
                             .settings select { background: #222; color: #fff; border: 1px solid rgba(255,255,255,0.3); border-radius: 4px; padding: 3px 6px; font-size: 11px; }
@@ -181,9 +215,14 @@ class MjpegServer(port: Int, private val controller: CameraController) : NanoHTT
                             <div id="map"></div>
                         </div>
                         
-                        <div class="status-badge" id="badge">
-                            <span class="dot" id="statusDot"></span>
-                            <span id="statusText">Verbinde WebRTC (H.264)...</span>
+                        <div class="top-bar-left">
+                            <div class="status-badge" id="badge">
+                                <span class="dot" id="statusDot"></span>
+                                <span id="statusText">Verbinde WebRTC (H.264)...</span>
+                            </div>
+                            <div class="viewer-badge" id="viewerBadge" title="Aktive Zuschauer auf diesem Stream">
+                                <span id="viewerIcon">👥</span> <span id="viewerText">1 Zuschauer (Du)</span>
+                            </div>
                         </div>
                         
                         <div class="settings">
@@ -968,6 +1007,41 @@ class MjpegServer(port: Int, private val controller: CameraController) : NanoHTT
                             }
                             updateLocation();
                             setInterval(updateLocation, 3000);
+
+                            // --- Session & Viewer Heartbeat ---
+                            let mySessionId = sessionStorage.getItem('pac_session_id');
+                            if (!mySessionId) {
+                                mySessionId = 's_' + Math.random().toString(36).substring(2, 9) + '_' + Date.now().toString(36);
+                                sessionStorage.setItem('pac_session_id', mySessionId);
+                            }
+
+                            function updateViewerBadge(count) {
+                                const el = document.getElementById('viewerText');
+                                if (!el) return;
+                                if (count <= 1) {
+                                    el.textContent = '1 Zuschauer (Du)';
+                                } else {
+                                    el.textContent = count + ' Zuschauer (inkl. Dir)';
+                                }
+                            }
+
+                            async function sendHeartbeat() {
+                                try {
+                                    const resp = await fetch('/heartbeat?session_id=' + encodeURIComponent(mySessionId));
+                                    if (resp.ok) {
+                                        const data = await resp.json();
+                                        updateViewerBadge(data.viewers);
+                                    }
+                                } catch(e) {}
+                            }
+                            setInterval(sendHeartbeat, 2000);
+                            sendHeartbeat();
+
+                            window.addEventListener('beforeunload', () => {
+                                try {
+                                    navigator.sendBeacon('/leave_session?session_id=' + encodeURIComponent(mySessionId));
+                                } catch(e) {}
+                            });
                         </script>
                     </body>
                     </html>
@@ -1090,6 +1164,23 @@ class MjpegServer(port: Int, private val controller: CameraController) : NanoHTT
                     service?.setFastPhotoMode(enabled)
                     return newFixedLengthResponse(Response.Status.OK, "application/json", "{\"fastPhotoMode\": $enabled}")
                 }
+            }
+            "/heartbeat" -> {
+                val sid = session.parms["session_id"]
+                if (sid != null) recordSessionActivity(sid)
+                val count = getViewerCount()
+                val json = "{\"viewers\": $count}"
+                val res = newFixedLengthResponse(Response.Status.OK, "application/json", json)
+                res.addHeader("Access-Control-Allow-Origin", "*")
+                res.addHeader("Cache-Control", "no-cache, no-store, must-revalidate")
+                return res
+            }
+            "/leave_session" -> {
+                val sid = session.parms["session_id"]
+                if (sid != null) removeSession(sid)
+                val res = newFixedLengthResponse(Response.Status.OK, "text/plain", "OK")
+                res.addHeader("Access-Control-Allow-Origin", "*")
+                return res
             }
             "/location" -> {
                 val json = "{\"lat\": $currentLat, \"lng\": $currentLng}"

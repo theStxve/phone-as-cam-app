@@ -299,7 +299,32 @@ fun MainScreen(
         
         Text(text = "URL: http://$selectedIp:$port", style = MaterialTheme.typography.titleMedium)
 
-        Spacer(modifier = Modifier.height(24.dp))
+        Spacer(modifier = Modifier.height(14.dp))
+
+        val viewerCount by CameraStreamingService.activeViewers.collectAsState()
+        Card(
+            modifier = Modifier.fillMaxWidth(0.85f),
+            colors = CardDefaults.cardColors(
+                containerColor = if (viewerCount > 0) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant
+            )
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.Center
+            ) {
+                Text(
+                    text = if (viewerCount == 0) "👥 0 Zuschauer (Standby)"
+                           else if (viewerCount == 1) "🟢 👥 1 aktiver Zuschauer"
+                           else "🟢 👥 $viewerCount aktive Zuschauer",
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
+                    color = if (viewerCount > 0) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+
+        Spacer(modifier = Modifier.height(20.dp))
         Row {
             Button(onClick = onStartStream) {
                 Text("Start Stream")

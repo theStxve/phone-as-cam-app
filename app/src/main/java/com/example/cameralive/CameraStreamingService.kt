@@ -63,6 +63,7 @@ class CameraStreamingService : LifecycleService(), CameraController, LocationLis
 
     companion object {
         private const val TAG = "CameraStreaming"
+        val activeViewers = kotlinx.coroutines.flow.MutableStateFlow(0)
     }
 
     private val CHANNEL_ID = "CameraStreamingChannel"
@@ -1252,6 +1253,7 @@ class CameraStreamingService : LifecycleService(), CameraController, LocationLis
 
     override fun onDestroy() {
         super.onDestroy()
+        activeViewers.value = 0
         if (isMegafonActive.get()) {
             setMegafon(false)
         }
