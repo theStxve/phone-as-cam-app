@@ -280,27 +280,40 @@ fun MainScreen(
     var expanded by remember { mutableStateOf(false) }
 
     Column(
-        modifier = Modifier.fillMaxSize().padding(16.dp),
-        verticalArrangement = Arrangement.Center,
-        horizontalAlignment = Alignment.CenterHorizontally
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(horizontal = 20.dp, vertical = 24.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Top
     ) {
-        Text(text = "Camera Live Stream", style = MaterialTheme.typography.headlineMedium)
-        Spacer(modifier = Modifier.height(24.dp))
+        Text(
+            text = "Camera Live Stream",
+            style = MaterialTheme.typography.headlineMedium,
+            fontWeight = androidx.compose.ui.text.font.FontWeight.Bold
+        )
+        Spacer(modifier = Modifier.height(16.dp))
         
-        Text(text = "Connect to:")
-        Spacer(modifier = Modifier.height(8.dp))
+        Text(
+            text = "Verbindungseinstellungen:",
+            style = MaterialTheme.typography.titleSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.fillMaxWidth(0.9f)
+        )
+        Spacer(modifier = Modifier.height(6.dp))
         
         ExposedDropdownMenuBox(
             expanded = expanded,
-            onExpandedChange = { expanded = !expanded }
+            onExpandedChange = { expanded = !expanded },
+            modifier = Modifier.fillMaxWidth(0.9f)
         ) {
             OutlinedTextField(
                 value = selectedIp,
                 onValueChange = {},
                 readOnly = true,
-                label = { Text("IP Address") },
+                label = { Text("IP-Adresse") },
                 trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
-                modifier = Modifier.menuAnchor().fillMaxWidth(0.85f)
+                modifier = Modifier.menuAnchor().fillMaxWidth()
             )
             ExposedDropdownMenu(
                 expanded = expanded,
@@ -318,44 +331,62 @@ fun MainScreen(
             }
         }
         
-        Spacer(modifier = Modifier.height(14.dp))
+        Spacer(modifier = Modifier.height(10.dp))
         
         OutlinedTextField(
             value = port,
             onValueChange = onPortChanged,
             label = { Text("Port") },
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-            modifier = Modifier.fillMaxWidth(0.85f)
+            modifier = Modifier.fillMaxWidth(0.9f)
         )
         
-        Spacer(modifier = Modifier.height(12.dp))
+        Spacer(modifier = Modifier.height(10.dp))
         
         OutlinedButton(
             onClick = onSetAsDefault,
-            modifier = Modifier.fillMaxWidth(0.85f)
+            modifier = Modifier.fillMaxWidth(0.9f)
         ) {
             Text(if (isDefault) "✓ Als Standard gespeichert" else "⭐ Als Standard speichern")
         }
 
-        Spacer(modifier = Modifier.height(12.dp))
+        Spacer(modifier = Modifier.height(10.dp))
 
         var showConfigDialog by remember { mutableStateOf(false) }
-        OutlinedButton(
+        Button(
             onClick = { showConfigDialog = true },
-            modifier = Modifier.fillMaxWidth(0.85f)
+            modifier = Modifier.fillMaxWidth(0.9f),
+            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary)
         ) {
-            Text("⚙️ Webhooks & Google Drive Backup")
+            Text("⚙️ KI-Alarm, Webhooks & Cloud")
         }
 
         Spacer(modifier = Modifier.height(12.dp))
         
-        Text(text = "URL: http://$selectedIp:$port", style = MaterialTheme.typography.titleMedium)
+        Card(
+            modifier = Modifier.fillMaxWidth(0.9f),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+        ) {
+            Column(modifier = Modifier.padding(12.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                Text(
+                    text = "🌐 Stream URL:",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Text(
+                    text = "http://$selectedIp:$port",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.primary
+                )
+            }
+        }
 
-        Spacer(modifier = Modifier.height(14.dp))
+        Spacer(modifier = Modifier.height(12.dp))
 
         val viewerCount by CameraStreamingService.activeViewers.collectAsState()
         Card(
-            modifier = Modifier.fillMaxWidth(0.85f),
+            modifier = Modifier.fillMaxWidth(0.9f),
             colors = CardDefaults.cardColors(
                 containerColor = if (viewerCount > 0) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant
             )
@@ -376,33 +407,42 @@ fun MainScreen(
             }
         }
 
-        Spacer(modifier = Modifier.height(20.dp))
-        Row {
-            Button(onClick = onStartStream) {
-                Text("Start Stream")
+        Spacer(modifier = Modifier.height(16.dp))
+        Row(
+            modifier = Modifier.fillMaxWidth(0.9f),
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Button(
+                onClick = onStartStream,
+                modifier = Modifier.weight(1f)
+            ) {
+                Text("▶ Start")
             }
-            Spacer(modifier = Modifier.width(16.dp))
-            Button(onClick = onStopStream) {
-                Text("Stop Stream")
+            Button(
+                onClick = onStopStream,
+                modifier = Modifier.weight(1f),
+                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+            ) {
+                Text("⏹ Stop")
             }
         }
 
-        Spacer(modifier = Modifier.height(16.dp))
+        Spacer(modifier = Modifier.height(14.dp))
 
         FilledTonalButton(
             onClick = onEnterBlackoutMode,
-            modifier = Modifier.fillMaxWidth(0.85f)
+            modifier = Modifier.fillMaxWidth(0.9f)
         ) {
-            Text("🌙 AMOLED Sparmodus (Bildschirm schwarz)")
+            Text("🌙 AMOLED Sparmodus (Schwarz)")
         }
         
-        Spacer(modifier = Modifier.height(8.dp))
+        Spacer(modifier = Modifier.height(10.dp))
         Text(
             text = "💡 Tipp: Sie können auch einfach den Power-Button drücken. Die Kamera streamt bei ausgeschaltetem Bildschirm weiter.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             textAlign = TextAlign.Center,
-            modifier = Modifier.fillMaxWidth(0.85f)
+            modifier = Modifier.fillMaxWidth(0.9f)
         )
 
         if (showConfigDialog) {
@@ -457,12 +497,15 @@ fun AutomationConfigDialog(
                     .fillMaxWidth()
                     .verticalScroll(rememberScrollState())
             ) {
-                TabRow(selectedTabIndex = selectedTab) {
+                ScrollableTabRow(
+                    selectedTabIndex = selectedTab,
+                    edgePadding = 8.dp
+                ) {
                     tabs.forEachIndexed { index, title ->
                         Tab(
                             selected = selectedTab == index,
                             onClick = { selectedTab = index },
-                            text = { Text(title, style = MaterialTheme.typography.bodySmall) }
+                            text = { Text(title, style = MaterialTheme.typography.bodySmall, fontWeight = androidx.compose.ui.text.font.FontWeight.Bold) }
                         )
                     }
                 }

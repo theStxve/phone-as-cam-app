@@ -745,10 +745,67 @@ class MjpegServer(port: Int, private val controller: CameraController) : NanoHTT
                                 }
                             }
 
-                            // --- 10-Second Video Clip Recording & Cloud Upload ---
-                            let mediaRecorder = null;
-                            let recordedChunks = [];
+                            // --- 5-Second Retroactive Video Clip Recording & Cloud Upload ---
+                            let preRecorder = null;
+                            let preBufferChunks = [];
+                            let activeRecorder = null;
                             let isRecordingClip = false;
+
+                            function getBestMimeType() {
+                                if (typeof MediaRecorder === 'undefined') return '';
+                                const types = [
+                                    'video/webm;codecs=vp8,opus',
+                                    'video/webm;codecs=vp8',
+                                    'video/webm',
+                                    'video/mp4'
+                                ];
+                                for (const t of types) {
+                                    if (MediaRecorder.isTypeSupported(t)) return t;
+                                }
+                                return '';
+                            }
+
+                            function initPreBuffer() {
+                                if (isRecordingClip) return;
+                                try {
+                                    if (preRecorder && preRecorder.state !== 'inactive') {
+                                        try { preRecorder.stop(); } catch(e) {}
+                                    }
+                                    preRecorder = null;
+                                    preBufferChunks = [];
+
+                                    let stream = videoEl.srcObject;
+                                    if (!stream && videoEl.captureStream) {
+                                        try { stream = videoEl.captureStream(); } catch(e) {}
+                                    }
+                                    if (!stream || (stream.getVideoTracks && stream.getVideoTracks().length === 0)) {
+                                        return;
+                                    }
+
+                                    const mime = getBestMimeType();
+                                    const options = mime ? { mimeType: mime } : {};
+                                    preRecorder = new MediaRecorder(stream, options);
+
+                                    preRecorder.ondataavailable = (e) => {
+                                        if (e.data && e.data.size > 0 && !isRecordingClip) {
+                                            const now = Date.now();
+                                            preBufferChunks.push({ data: e.data, time: now });
+                                            // Keep only the last 5.5 seconds of chunks (retroactive buffer)
+                                            preBufferChunks = preBufferChunks.filter(c => c.time >= (now - 5500));
+                                        }
+                                    };
+
+                                    preRecorder.onerror = (e) => {
+                                        console.warn('Pre-buffer error:', e);
+                                    };
+
+                                    // Emit 1-second chunks into the ring buffer
+                                    preRecorder.start(1000);
+                                    console.log('🔄 5s Retroactive Pre-Buffer active');
+                                } catch(e) {
+                                    console.warn('initPreBuffer failed:', e);
+                                }
+                            }
 
                             async function recordClip(durationSec = 10) {
                                 if (isRecordingClip) return;
@@ -756,53 +813,60 @@ class MjpegServer(port: Int, private val controller: CameraController) : NanoHTT
 
                                 let stream = videoEl.srcObject;
                                 if (!stream && videoEl.captureStream) {
-                                    stream = videoEl.captureStream();
+                                    try { stream = videoEl.captureStream(); } catch(e) {}
                                 }
 
                                 if (!stream) {
-                                    alert('Kein aktiver Video-Stream für Clip-Aufnahme vorhanden.');
+                                    showToast('Kein aktiver Video-Stream für Aufnahme!');
                                     return;
                                 }
 
                                 try {
                                     isRecordingClip = true;
-                                    recordedChunks = [];
-                                    
-                                    let mimeType = 'video/webm;codecs=vp8,opus';
-                                    if (!MediaRecorder.isTypeSupported(mimeType)) {
-                                        mimeType = 'video/webm';
-                                    }
-                                    if (!MediaRecorder.isTypeSupported(mimeType)) {
-                                        mimeType = 'video/mp4';
-                                    }
-                                    if (!MediaRecorder.isTypeSupported(mimeType)) {
-                                        mimeType = '';
-                                    }
-                                    
-                                    const options = mimeType ? { mimeType: mimeType } : {};
-                                    mediaRecorder = new MediaRecorder(stream, options);
+                                    if (clipBtn) clipBtn.classList.add('active');
 
-                                    mediaRecorder.ondataavailable = (e) => {
+                                    // Extract the retroactive 5-second buffer (footage before trigger)
+                                    const now = Date.now();
+                                    const validPreChunks = preBufferChunks.filter(c => c.time >= (now - 6000));
+                                    const initialChunks = validPreChunks.map(c => c.data);
+                                    const preDurationSec = Math.min(5, Math.max(0, Math.round(initialChunks.length)));
+
+                                    // Stop pre-recorder so it doesn't conflict with main recorder
+                                    if (preRecorder && preRecorder.state !== 'inactive') {
+                                        try { preRecorder.stop(); } catch(e) {}
+                                    }
+                                    preRecorder = null;
+                                    preBufferChunks = [];
+
+                                    const liveChunks = [];
+                                    const mimeType = getBestMimeType();
+                                    const options = mimeType ? { mimeType: mimeType } : {};
+                                    activeRecorder = new MediaRecorder(stream, options);
+
+                                    activeRecorder.ondataavailable = (e) => {
                                         if (e.data && e.data.size > 0) {
-                                            recordedChunks.push(e.data);
+                                            liveChunks.push(e.data);
                                         }
                                     };
 
-                                    mediaRecorder.onstop = async () => {
+                                    activeRecorder.onstop = async () => {
+                                        const allChunks = [...initialChunks, ...liveChunks];
                                         const actualMime = mimeType || 'video/webm';
-                                        const blob = new Blob(recordedChunks, { type: actualMime });
+                                        const blob = new Blob(allChunks, { type: actualMime });
                                         const ext = actualMime.includes('mp4') ? '.mp4' : '.webm';
                                         const filename = 'clip_' + Date.now() + ext;
 
                                         // 1. Download in browser
-                                        const url = URL.createObjectURL(blob);
-                                        const a = document.createElement('a');
-                                        a.href = url;
-                                        a.download = filename;
-                                        document.body.appendChild(a);
-                                        a.click();
-                                        document.body.removeChild(a);
-                                        URL.revokeObjectURL(url);
+                                        try {
+                                            const url = URL.createObjectURL(blob);
+                                            const a = document.createElement('a');
+                                            a.href = url;
+                                            a.download = filename;
+                                            document.body.appendChild(a);
+                                            a.click();
+                                            document.body.removeChild(a);
+                                            setTimeout(() => URL.revokeObjectURL(url), 1000);
+                                        } catch(e) {}
 
                                         // 2. Upload to Google Drive via Phone Server
                                         try {
@@ -814,26 +878,36 @@ class MjpegServer(port: Int, private val controller: CameraController) : NanoHTT
                                         } catch(e) {}
 
                                         isRecordingClip = false;
+                                        activeRecorder = null;
                                         if (clipBtn) {
                                             clipBtn.classList.remove('active');
                                             clipBtn.innerHTML = '🎥<span class="btn-label-desktop"> Clip (10s)</span>';
                                         }
+                                        showToast('✓ Clip gespeichert (inkl. 5s Vorlauf)!');
+
+                                        // Restart rolling pre-buffer
+                                        setTimeout(initPreBuffer, 500);
                                     };
 
-                                    mediaRecorder.start(500);
-                                    if (clipBtn) clipBtn.classList.add('active');
+                                    // Record live for remaining post-trigger duration (typically 5-6s)
+                                    const postTriggerDuration = Math.max(5, durationSec - preDurationSec);
+                                    activeRecorder.start(500);
 
-                                    let remaining = durationSec;
-                                    if (clipBtn) clipBtn.innerHTML = '🔴<span class="btn-label-desktop"> ' + remaining + 's</span>';
+                                    let remaining = postTriggerDuration;
+                                    if (clipBtn) {
+                                        clipBtn.innerHTML = '🔴<span class="btn-label-desktop"> (' + preDurationSec + 's+' + remaining + 's)</span>';
+                                    }
 
                                     const timer = setInterval(() => {
                                         remaining--;
                                         if (remaining > 0) {
-                                            if (clipBtn) clipBtn.innerHTML = '🔴<span class="btn-label-desktop"> ' + remaining + 's</span>';
+                                            if (clipBtn) {
+                                                clipBtn.innerHTML = '🔴<span class="btn-label-desktop"> (' + preDurationSec + 's+' + remaining + 's)</span>';
+                                            }
                                         } else {
                                             clearInterval(timer);
-                                            if (mediaRecorder && mediaRecorder.state === 'recording') {
-                                                mediaRecorder.stop();
+                                            if (activeRecorder && activeRecorder.state === 'recording') {
+                                                try { activeRecorder.stop(); } catch(e) {}
                                             }
                                         }
                                     }, 1000);
@@ -841,11 +915,13 @@ class MjpegServer(port: Int, private val controller: CameraController) : NanoHTT
                                 } catch (e) {
                                     console.error('Clip error:', e);
                                     isRecordingClip = false;
+                                    activeRecorder = null;
                                     if (clipBtn) {
                                         clipBtn.classList.remove('active');
                                         clipBtn.innerHTML = '🎥<span class="btn-label-desktop"> Clip (10s)</span>';
                                     }
-                                    alert('Clip-Fehler: ' + e.message);
+                                    showToast('Clip-Fehler: ' + e.message);
+                                    setTimeout(initPreBuffer, 1000);
                                 }
                             }
 
@@ -1430,7 +1506,9 @@ class MjpegServer(port: Int, private val controller: CameraController) : NanoHTT
                                             statusText.textContent = '● WebRTC H.264 (<100ms)';
                                             videoEl.style.display = 'block';
                                             mainImg.style.display = 'none';
-                                            videoEl.play().catch(e => console.log('videoEl play:', e));
+                                            videoEl.play().then(() => {
+                                                setTimeout(initPreBuffer, 500);
+                                            }).catch(e => console.log('videoEl play:', e));
                                         } else if (pc.iceConnectionState === 'disconnected' || pc.iceConnectionState === 'failed') {
                                             console.warn('ICE connection state:', pc.iceConnectionState);
                                             if (webrtcConnected) {
@@ -1877,6 +1955,10 @@ class MjpegServer(port: Int, private val controller: CameraController) : NanoHTT
                             }
                             setInterval(sendHeartbeat, 2000);
                             sendHeartbeat();
+
+                            videoEl.addEventListener('playing', () => {
+                                setTimeout(initPreBuffer, 500);
+                            });
 
                             window.addEventListener('beforeunload', () => {
                                 try {
