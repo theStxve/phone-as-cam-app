@@ -449,6 +449,35 @@ class CameraStreamingService : LifecycleService(), CameraController, LocationLis
         }
     }
     
+    @Volatile var gpsIntervalSec: Int = 300 // Default 5 minutes for stationary deployment (0 = off)
+
+    fun setLocationInterval(seconds: Int) {
+        gpsIntervalSec = seconds.coerceAtLeast(0)
+        android.os.Handler(mainLooper).post {
+            updateLocationTracking()
+        }
+    }
+
+    private fun updateLocationTracking() {
+        locationManager?.removeUpdates(this)
+        if (gpsIntervalSec <= 0) {
+            Log.i(TAG, "GPS tracking stopped (Stationary Mode)")
+            return
+        }
+        if (ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED &&
+            ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
+            return
+        }
+        val minTimeMs = gpsIntervalSec * 1000L
+        try {
+            locationManager?.requestLocationUpdates(LocationManager.GPS_PROVIDER, minTimeMs, 10f, this)
+            locationManager?.requestLocationUpdates(LocationManager.NETWORK_PROVIDER, minTimeMs, 10f, this)
+            Log.i(TAG, "GPS tracking updated: interval = ${gpsIntervalSec}s")
+        } catch (e: Exception) {
+            Log.w(TAG, "Error updating location updates", e)
+        }
+    }
+    
     private fun startLocationTracking() {
         if (ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED &&
             ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
@@ -464,8 +493,7 @@ class CameraStreamingService : LifecycleService(), CameraController, LocationLis
             mjpegServer?.currentLng = it.longitude
         }
         
-        locationManager?.requestLocationUpdates(LocationManager.GPS_PROVIDER, 2000L, 0f, this)
-        locationManager?.requestLocationUpdates(LocationManager.NETWORK_PROVIDER, 2000L, 0f, this)
+        updateLocationTracking()
     }
 
     override fun onLocationChanged(location: Location) {

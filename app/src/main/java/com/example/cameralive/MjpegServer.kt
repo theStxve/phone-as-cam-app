@@ -123,6 +123,7 @@ class MjpegServer(port: Int, private val controller: CameraController) : NanoHTT
                 val currentFps = service?.maxFps?.get() ?: 20
                 val currentRes = service?.targetResolution?.get() ?: "480p"
                 val currentPhotoQuality = service?.photoJpegQuality?.get() ?: 95
+                val currentGpsInterval = service?.gpsIntervalSec ?: 300
                 val isFastPhoto = service?.fastPhotoMode?.get() ?: false
                 val bestSensorLabel = service?.detectedCameraLabel ?: "Wird ermittelt..."
                 val isSelfieOn = service?.isFrontCameraEnabled?.get() ?: false
@@ -155,6 +156,8 @@ class MjpegServer(port: Int, private val controller: CameraController) : NanoHTT
                             
                             .overlay { position: absolute; border: 2px solid rgba(255,255,255,0.4); border-radius: 8px; overflow: hidden; box-shadow: 0 4px 15px rgba(0,0,0,0.5); z-index: 100; background: #222; }
                             .overlay-label { position: absolute; top: 5px; left: 5px; background: rgba(0,0,0,0.6); padding: 2px 8px; border-radius: 4px; font-size: 12px; font-weight: bold; z-index: 101; }
+                            .btn-pip-close { position: absolute; top: 4px; right: 4px; z-index: 102; background: rgba(0,0,0,0.65); color: #fff; border: 1px solid rgba(255,255,255,0.3); border-radius: 4px; width: 22px; height: 22px; padding: 0; display: flex; align-items: center; justify-content: center; font-size: 11px; cursor: pointer; opacity: 0.85; transition: all 0.2s; }
+                            .btn-pip-close:hover { opacity: 1; background: #dc3545; border-color: #dc3545; }
                             
                             .selfie-pip { bottom: 15px; right: 15px; width: 240px; height: 180px; }
                             .selfie-pip img { width: 100%; height: 100%; object-fit: cover; }
@@ -173,6 +176,8 @@ class MjpegServer(port: Int, private val controller: CameraController) : NanoHTT
                             .btn-rotate { background: #17a2b8; }
                             .btn-selfie { background: #495057; }
                             .btn-selfie.active { background: #e8590c; box-shadow: 0 0 10px rgba(232, 89, 12, 0.6); }
+                            .btn-map { background: #087f5b; }
+                            .btn-map.active { background: #12b886; box-shadow: 0 0 10px rgba(18, 184, 134, 0.6); }
                             .btn-audio { background: #28a745; }
                             .btn-audio.muted { background: #6c757d; }
                             .btn-photo { background: #198754; }
@@ -210,8 +215,9 @@ class MjpegServer(port: Int, private val controller: CameraController) : NanoHTT
                             <img id="frontImg" alt="Front Camera" />
                         </div>
                         
-                        <div class="overlay map-pip">
+                        <div class="overlay map-pip" id="mapPip">
                             <div class="overlay-label">📍 GPS</div>
+                            <button class="btn-pip-close" onclick="toggleMapVisibility(false)" title="Karte schließen / minimieren">✕</button>
                             <div id="map"></div>
                         </div>
                         
@@ -251,6 +257,17 @@ class MjpegServer(port: Int, private val controller: CameraController) : NanoHTT
                                 <input type="checkbox" id="fastPhotoCheck" ${if (isFastPhoto) "checked" else ""} onchange="onFastPhotoToggle(this.checked)" style="width: 16px; height: 16px; cursor: pointer;">
                             </label>
                             <div id="sensorInfo" style="font-size: 10px; color: #4dabf7; margin-top: 4px; text-align: right;" title="Wird bei normalem Foto für maximale Auflösung genutzt">🔍 $bestSensorLabel</div>
+                            <div style="border-top: 1px solid rgba(255,255,255,0.15); margin: 8px 0;"></div>
+                            <div style="font-weight: bold; margin-bottom: 6px; color: #aaa; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px;">📍 GPS &amp; Standort</div>
+                            <label>GPS-Intervall:
+                                <select id="gpsSelect" onchange="onGpsIntervalChange(this.value)">
+                                    <option value="0" ${if (currentGpsInterval == 0) "selected" else ""}>Aus (Stationär - spart Akku)</option>
+                                    <option value="900" ${if (currentGpsInterval == 900) "selected" else ""}>Alle 15 Min</option>
+                                    <option value="300" ${if (currentGpsInterval == 300) "selected" else ""}>Alle 5 Min (Standard)</option>
+                                    <option value="60" ${if (currentGpsInterval == 60) "selected" else ""}>Jede Minute</option>
+                                    <option value="10" ${if (currentGpsInterval == 10) "selected" else ""}>Alle 10 Sek (Live)</option>
+                                </select>
+                            </label>
                         </div>
                         
                         <div class="controls">
@@ -260,6 +277,7 @@ class MjpegServer(port: Int, private val controller: CameraController) : NanoHTT
                             <button class="btn-switch" id="switchBtn" onclick="switchCamera()" title="Kamera wechseln (Hauptkamera / Frontkamera)">$switchCamText</button>
                             <button class="btn-rotate" onclick="rotateStream()" title="Bild um 90° nach links drehen">⟲ 90°</button>
                             <button class="$selfieBtnClass" id="selfieBtn" onclick="toggleSelfie()" title="Selfie-Kamera PiP an/aus">$selfieBtnText</button>
+                            <button class="btn-map active" id="mapBtn" onclick="toggleMapVisibility()" title="GPS-Karte ein-/ausblenden">📍 Karte</button>
                             <button class="btn-audio muted" id="audioBtn" title="Audio">🔇 Ton an</button>
                             <button class="btn-megafon" id="megafonBtn" onclick="toggleMegafon()" title="Megafon: Mikrofon an Handy-Lautsprecher">📢 Megafon</button>
                         </div>
@@ -987,13 +1005,42 @@ class MjpegServer(port: Int, private val controller: CameraController) : NanoHTT
                             photoQualitySlider.addEventListener('input', function() { onPhotoQualityChange(this.value); });
                             photoQualitySlider.addEventListener('change', function() { onPhotoQualityChange(this.value); });
 
-                            // --- Map ---
+                            function onGpsIntervalChange(val) {
+                                fetch('/set_gps_interval?interval=' + encodeURIComponent(val), { method: 'POST' }).catch(() => {});
+                            }
+
+                            // --- Map & Location ---
                             var map = L.map('map', { zoomControl: false, attributionControl: false }).setView([0, 0], 15);
                             L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(map);
                             var marker = L.marker([0, 0]).addTo(map);
                             var firstUpdate = true;
+                            var locationIntervalId = null;
+
+                            let isMapVisible = localStorage.getItem('pac_show_map') !== 'false';
+
+                            function toggleMapVisibility(targetState) {
+                                if (typeof targetState === 'boolean') {
+                                    isMapVisible = targetState;
+                                } else {
+                                    isMapVisible = !isMapVisible;
+                                }
+                                localStorage.setItem('pac_show_map', isMapVisible);
+                                const mapPip = document.getElementById('mapPip');
+                                const mapBtn = document.getElementById('mapBtn');
+                                if (isMapVisible) {
+                                    if (mapPip) mapPip.style.display = 'block';
+                                    if (mapBtn) mapBtn.classList.add('active');
+                                    setTimeout(() => { map.invalidateSize(); }, 150);
+                                    startLocationPolling();
+                                } else {
+                                    if (mapPip) mapPip.style.display = 'none';
+                                    if (mapBtn) mapBtn.classList.remove('active');
+                                    stopLocationPolling();
+                                }
+                            }
 
                             async function updateLocation() {
+                                if (!isMapVisible) return;
                                 try {
                                     const resp = await fetch('/location');
                                     const data = await resp.json();
@@ -1005,8 +1052,21 @@ class MjpegServer(port: Int, private val controller: CameraController) : NanoHTT
                                     }
                                 } catch (e) {}
                             }
-                            updateLocation();
-                            setInterval(updateLocation, 3000);
+
+                            function startLocationPolling() {
+                                if (locationIntervalId) clearInterval(locationIntervalId);
+                                updateLocation();
+                                locationIntervalId = setInterval(updateLocation, 4000);
+                            }
+
+                            function stopLocationPolling() {
+                                if (locationIntervalId) {
+                                    clearInterval(locationIntervalId);
+                                    locationIntervalId = null;
+                                }
+                            }
+
+                            toggleMapVisibility(isMapVisible);
 
                             // --- Session & Viewer Heartbeat ---
                             let mySessionId = sessionStorage.getItem('pac_session_id');
@@ -1185,6 +1245,13 @@ class MjpegServer(port: Int, private val controller: CameraController) : NanoHTT
             "/location" -> {
                 val json = "{\"lat\": $currentLat, \"lng\": $currentLng}"
                 return newFixedLengthResponse(Response.Status.OK, "application/json", json)
+            }
+            "/set_gps_interval" -> {
+                if (session.method == Method.POST) {
+                    val interval = session.parms["interval"]?.toIntOrNull() ?: 300
+                    service?.setLocationInterval(interval)
+                    return newFixedLengthResponse(Response.Status.OK, "application/json", "{\"gpsInterval\": $interval}")
+                }
             }
             "/settings" -> {
                 if (session.method == Method.POST) {
