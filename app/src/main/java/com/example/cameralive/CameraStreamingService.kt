@@ -118,6 +118,22 @@ class CameraStreamingService : LifecycleService(), CameraController, LocationLis
     // ImageCapture use-case for native full-sensor-resolution photos
     @Volatile private var imageCapture: ImageCapture? = null
 
+    private val batteryReceiver = object : android.content.BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            if (intent?.action == Intent.ACTION_BATTERY_CHANGED) {
+                val level = intent.getIntExtra(android.os.BatteryManager.EXTRA_LEVEL, -1)
+                val scale = intent.getIntExtra(android.os.BatteryManager.EXTRA_SCALE, -1)
+                val status = intent.getIntExtra(android.os.BatteryManager.EXTRA_STATUS, -1)
+                val pct = if (level >= 0 && scale > 0) (level * 100) / scale else -1
+                val isCharging = status == android.os.BatteryManager.BATTERY_STATUS_CHARGING ||
+                                 status == android.os.BatteryManager.BATTERY_STATUS_FULL
+                if (pct >= 0) {
+                    WebhookManager.onBatteryChanged(pct, isCharging)
+                }
+            }
+        }
+    }
+
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
@@ -126,6 +142,13 @@ class CameraStreamingService : LifecycleService(), CameraController, LocationLis
 
         // Call startForeground() IMMEDIATELY in onCreate to avoid the 5-second FGS deadline.
         // Android 14 requires this before any slow operations like WebRTC init.
+        WebhookManager.init(this)
+        GoogleDriveBackupManager.init(this)
+        try {
+            registerReceiver(batteryReceiver, android.content.IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+        } catch (e: Exception) {
+            Log.e(TAG, "Error registering battery receiver", e)
+        }
         val placeholderNotification = NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("Camera Streaming Active")
             .setContentText("Starting…")
@@ -240,6 +263,9 @@ class CameraStreamingService : LifecycleService(), CameraController, LocationLis
                 }
                 if (resultBytes != null && resultBytes.isNotEmpty()) {
                     Log.i(TAG, "Fast photo captured: ${resultBytes.size / 1024} KB")
+                    if (GoogleDriveBackupManager.isAutoBackupEnabled) {
+                        GoogleDriveBackupManager.uploadPhotoAsync(this, resultBytes)
+                    }
                     return resultBytes
                 }
             }
@@ -259,6 +285,11 @@ class CameraStreamingService : LifecycleService(), CameraController, LocationLis
                 synchronized(photoLock) {
                     isPhotoRequested = false
                     this.photoLatch = null
+                }
+            }
+            latestCapturedPhoto?.let { photo ->
+                if (GoogleDriveBackupManager.isAutoBackupEnabled) {
+                    GoogleDriveBackupManager.uploadPhotoAsync(this, photo)
                 }
             }
             return latestCapturedPhoto
@@ -383,29 +414,13 @@ class CameraStreamingService : LifecycleService(), CameraController, LocationLis
             Log.w(TAG, "High-res capture wait timeout", e)
         }
 
-        if (resultBytes != null && resultBytes.isNotEmpty()) {
-            return resultBytes
-        }
-
-        // --- Last-resort fallback: grab a frame from the active stream ---
-        Log.w(TAG, "High-res path failed — falling back to stream frame")
-        val streamLatch = CountDownLatch(1)
-        synchronized(photoLock) {
-            latestCapturedPhoto = null
-            this.photoLatch = streamLatch
-            isPhotoRequested = true
-        }
-        try {
-            streamLatch.await(3500, TimeUnit.MILLISECONDS)
-        } catch (e: Exception) {
-            Log.w(TAG, "Stream-frame fallback timeout", e)
-        } finally {
-            synchronized(photoLock) {
-                isPhotoRequested = false
-                this.photoLatch = null
+        val finalPhoto = if (resultBytes != null && resultBytes.isNotEmpty()) resultBytes else latestCapturedPhoto
+        if (finalPhoto != null && finalPhoto.isNotEmpty()) {
+            if (GoogleDriveBackupManager.isAutoBackupEnabled) {
+                GoogleDriveBackupManager.uploadPhotoAsync(this, finalPhoto)
             }
         }
-        return latestCapturedPhoto
+        return finalPhoto
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {

@@ -1,5 +1,6 @@
 package com.example.cameralive
 
+import com.example.cameralive.theme.CameraLiveTheme
 import android.Manifest
 import android.content.Context
 import android.content.Intent
@@ -16,16 +17,17 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
-import com.example.cameralive.theme.CameraLiveTheme
 import java.net.NetworkInterface
-
 import android.widget.Toast
+import android.util.Log
 
 import android.os.PowerManager
 import android.provider.Settings
 import android.view.WindowManager
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.style.TextAlign
 
@@ -33,6 +35,36 @@ class MainActivity : ComponentActivity() {
 
     private var savedPort = "8080"
     private var serviceStarted = false
+
+    private val googleSignInLauncher =
+        registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+            val task = com.google.android.gms.auth.api.signin.GoogleSignIn.getSignedInAccountFromIntent(result.data)
+            try {
+                val account = task.getResult(com.google.android.gms.common.api.ApiException::class.java)
+                if (account != null) {
+                    GoogleDriveBackupManager.setAccountConnected(account.email, true, this)
+                    Toast.makeText(this, "Google Drive verknüpft: ${account.email}", Toast.LENGTH_SHORT).show()
+                }
+            } catch (e: Exception) {
+                Log.e("MainActivity", "Google Sign-In failed", e)
+                Toast.makeText(this, "Google Anmeldung fehlgeschlagen: ${e.localizedMessage}", Toast.LENGTH_LONG).show()
+            }
+        }
+
+    fun startGoogleSignIn() {
+        val gso = GoogleDriveBackupManager.getGoogleSignInOptions()
+        val client = com.google.android.gms.auth.api.signin.GoogleSignIn.getClient(this, gso)
+        googleSignInLauncher.launch(client.signInIntent)
+    }
+
+    fun disconnectGoogleAccount() {
+        val gso = GoogleDriveBackupManager.getGoogleSignInOptions()
+        val client = com.google.android.gms.auth.api.signin.GoogleSignIn.getClient(this, gso)
+        client.signOut().addOnCompleteListener {
+            GoogleDriveBackupManager.setAccountConnected(null, false, this)
+            Toast.makeText(this, "Google Account getrennt", Toast.LENGTH_SHORT).show()
+        }
+    }
 
     private val requestPermissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { permissions ->
@@ -296,6 +328,16 @@ fun MainScreen(
         }
 
         Spacer(modifier = Modifier.height(12.dp))
+
+        var showConfigDialog by remember { mutableStateOf(false) }
+        OutlinedButton(
+            onClick = { showConfigDialog = true },
+            modifier = Modifier.fillMaxWidth(0.85f)
+        ) {
+            Text("⚙️ Webhooks & Google Drive Backup")
+        }
+
+        Spacer(modifier = Modifier.height(12.dp))
         
         Text(text = "URL: http://$selectedIp:$port", style = MaterialTheme.typography.titleMedium)
 
@@ -352,5 +394,288 @@ fun MainScreen(
             textAlign = TextAlign.Center,
             modifier = Modifier.fillMaxWidth(0.85f)
         )
+
+        if (showConfigDialog) {
+            AutomationConfigDialog(
+                onDismiss = { showConfigDialog = false }
+            )
+        }
     }
+}
+
+@Composable
+fun AutomationConfigDialog(
+    onDismiss: () -> Unit
+) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val activity = context as? MainActivity
+
+    var batteryProtection by remember { mutableStateOf(WebhookManager.batteryProtectionEnabled) }
+    var plugOffUrl by remember { mutableStateOf(WebhookManager.plugOffUrl) }
+    var plugOnUrl by remember { mutableStateOf(WebhookManager.plugOnUrl) }
+
+    var alarmEnabled by remember { mutableStateOf(WebhookManager.alarmWebhookEnabled) }
+    var alarmUrl by remember { mutableStateOf(WebhookManager.alarmWebhookUrl) }
+
+    var driveEnabled by remember { mutableStateOf(GoogleDriveBackupManager.isAutoBackupEnabled) }
+    val connectedAccount = GoogleDriveBackupManager.connectedAccountEmail
+
+    var selectedTab by remember { mutableStateOf(0) }
+    val tabs = listOf("🔌 Smart-Plug", "🚨 Alarm", "☁️ Google Drive")
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text(
+                text = "⚙️ Automatisierung & Cloud",
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = androidx.compose.ui.text.font.FontWeight.Bold
+            )
+        },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState())
+            ) {
+                TabRow(selectedTabIndex = selectedTab) {
+                    tabs.forEachIndexed { index, title ->
+                        Tab(
+                            selected = selectedTab == index,
+                            onClick = { selectedTab = index },
+                            text = { Text(title, style = MaterialTheme.typography.bodySmall) }
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(16.dp))
+
+                when (selectedTab) {
+                    0 -> { // Smart Plug
+                        Text(
+                            text = "24/7 Dauerbetrieb & Akkuschutz",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = androidx.compose.ui.text.font.FontWeight.Bold
+                        )
+                        Text(
+                            text = "Sendet HTTP-Webhooks an Smarthome-Steckdosen (Shelly, Home Assistant, Tasmota), um den Akku zwischen 20% und 80% zu halten.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Spacer(modifier = Modifier.height(12.dp))
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text("Akkuschutz aktiv (80% / 20%):", style = MaterialTheme.typography.bodyMedium)
+                            Switch(checked = batteryProtection, onCheckedChange = { batteryProtection = it })
+                        }
+
+                        Spacer(modifier = Modifier.height(8.dp))
+
+                        OutlinedTextField(
+                            value = plugOffUrl,
+                            onValueChange = { plugOffUrl = it },
+                            label = { Text("Smart-Plug AUS URL (bei 80%)") },
+                            placeholder = { Text("http://192.168.1.50/relay/0?turn=off") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                            TextButton(onClick = {
+                                WebhookManager.sendWebhook(plugOffUrl, null) { success, msg ->
+                                    android.os.Handler(android.os.Looper.getMainLooper()).post {
+                                        Toast.makeText(context, if (success) "✓ Signal gesendet ($msg)" else "❌ Fehler: $msg", Toast.LENGTH_SHORT).show()
+                                    }
+                                }
+                            }) {
+                                Text("⚡ Test AUS")
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(4.dp))
+
+                        OutlinedTextField(
+                            value = plugOnUrl,
+                            onValueChange = { plugOnUrl = it },
+                            label = { Text("Smart-Plug AN URL (bei 20%)") },
+                            placeholder = { Text("http://192.168.1.50/relay/0?turn=on") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                            TextButton(onClick = {
+                                WebhookManager.sendWebhook(plugOnUrl, null) { success, msg ->
+                                    android.os.Handler(android.os.Looper.getMainLooper()).post {
+                                        Toast.makeText(context, if (success) "✓ Signal gesendet ($msg)" else "❌ Fehler: $msg", Toast.LENGTH_SHORT).show()
+                                    }
+                                }
+                            }) {
+                                Text("⚡ Test AN")
+                            }
+                        }
+
+                        if (WebhookManager.currentBatteryLevel >= 0) {
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Text(
+                                text = "🔋 Status: ${WebhookManager.currentBatteryLevel}% (${if (WebhookManager.isCurrentlyCharging) "Wird geladen" else "Entlädt"})",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                        }
+                    }
+                    1 -> { // Alarm Webhooks
+                        Text(
+                            text = "Alarm & Ereignis-Benachrichtigungen",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = androidx.compose.ui.text.font.FontWeight.Bold
+                        )
+                        Text(
+                            text = "Sendet bei Alarmen sofort eine POST-Nachricht (Discord Webhook, Home Assistant, n8n, etc.).",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Spacer(modifier = Modifier.height(12.dp))
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text("Alarm-Webhook aktiv:", style = MaterialTheme.typography.bodyMedium)
+                            Switch(checked = alarmEnabled, onCheckedChange = { alarmEnabled = it })
+                        }
+
+                        Spacer(modifier = Modifier.height(8.dp))
+
+                        OutlinedTextField(
+                            value = alarmUrl,
+                            onValueChange = { alarmUrl = it },
+                            label = { Text("Webhook URL") },
+                            placeholder = { Text("https://discord.com/api/webhooks/...") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                            TextButton(onClick = {
+                                WebhookManager.alarmWebhookEnabled = true
+                                WebhookManager.alarmWebhookUrl = alarmUrl
+                                WebhookManager.sendAlarm("Test-Alarm von CameraLive App") { success, msg ->
+                                    android.os.Handler(android.os.Looper.getMainLooper()).post {
+                                        Toast.makeText(context, if (success) "✓ Test-Alarm zugestellt!" else "❌ Fehler: $msg", Toast.LENGTH_SHORT).show()
+                                    }
+                                }
+                            }) {
+                                Text("⚡ Test-Alarm senden")
+                            }
+                        }
+                    }
+                    2 -> { // Google Drive
+                        Text(
+                            text = "Google Drive Auto-Backup",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = androidx.compose.ui.text.font.FontWeight.Bold
+                        )
+                        Text(
+                            text = "Fotos und Event-Aufnahmen automatisch direkt in deinem Google Drive sichern.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Spacer(modifier = Modifier.height(14.dp))
+
+                        if (connectedAccount != null) {
+                            Card(
+                                modifier = Modifier.fillMaxWidth(),
+                                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer)
+                            ) {
+                                Column(modifier = Modifier.padding(12.dp)) {
+                                    Text(
+                                        text = "🟢 Verbunden:",
+                                        style = MaterialTheme.typography.labelMedium,
+                                        fontWeight = androidx.compose.ui.text.font.FontWeight.Bold
+                                    )
+                                    Text(
+                                        text = connectedAccount,
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        fontWeight = androidx.compose.ui.text.font.FontWeight.Bold
+                                    )
+                                    Spacer(modifier = Modifier.height(8.dp))
+                                    TextButton(onClick = {
+                                        activity?.disconnectGoogleAccount()
+                                    }) {
+                                        Text("Konto trennen", color = MaterialTheme.colorScheme.error)
+                                    }
+                                }
+                            }
+
+                            Spacer(modifier = Modifier.height(12.dp))
+
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Text("Fotos automatisch sichern:", style = MaterialTheme.typography.bodyMedium)
+                                Switch(checked = driveEnabled, onCheckedChange = { driveEnabled = it })
+                            }
+
+                            Spacer(modifier = Modifier.height(6.dp))
+                            Text(
+                                text = "Status: ${GoogleDriveBackupManager.lastBackupStatus}",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        } else {
+                            Card(
+                                modifier = Modifier.fillMaxWidth(),
+                                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+                            ) {
+                                Column(
+                                    modifier = Modifier.padding(16.dp),
+                                    horizontalAlignment = Alignment.CenterHorizontally
+                                ) {
+                                    Text(
+                                        text = "⚪ Kein Google Account verbunden",
+                                        style = MaterialTheme.typography.bodyMedium
+                                    )
+                                    Spacer(modifier = Modifier.height(12.dp))
+                                    Button(onClick = {
+                                        activity?.startGoogleSignIn()
+                                    }) {
+                                        Text("🔗 Google Account verknüpfen")
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Button(onClick = {
+                WebhookManager.batteryProtectionEnabled = batteryProtection
+                WebhookManager.plugOffUrl = plugOffUrl
+                WebhookManager.plugOnUrl = plugOnUrl
+                WebhookManager.alarmWebhookEnabled = alarmEnabled
+                WebhookManager.alarmWebhookUrl = alarmUrl
+                WebhookManager.save(context)
+
+                GoogleDriveBackupManager.isAutoBackupEnabled = driveEnabled
+                GoogleDriveBackupManager.save(context)
+
+                Toast.makeText(context, "✓ Einstellungen gespeichert", Toast.LENGTH_SHORT).show()
+                onDismiss()
+            }) {
+                Text("💾 Speichern & Schließen")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Abbrechen")
+            }
+        }
+    )
 }

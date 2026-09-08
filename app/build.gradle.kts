@@ -95,4 +95,7 @@ dependencies {
 
   // WebRTC
   implementation(libs.stream.webrtc)
+
+  // Google Sign-In & Drive Auth
+  implementation(libs.play.services.auth)
 }
