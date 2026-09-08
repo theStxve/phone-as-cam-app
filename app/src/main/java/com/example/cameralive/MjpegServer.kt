@@ -1073,8 +1073,9 @@ class MjpegServer(port: Int, private val controller: CameraController) : NanoHTT
                                         autoClip: autoClip,
                                         autoDrive: autoDrive
                                     });
-                                    await fetch('/ai_state', { method: 'POST', body: params });
+                                    await fetch('/ai_state?' + params.toString(), { method: 'POST' });
                                     fetchAiState();
+                                    showToast('✓ KI-Einstellungen aktualisiert');
                                 } catch(e) {}
                             }
 
