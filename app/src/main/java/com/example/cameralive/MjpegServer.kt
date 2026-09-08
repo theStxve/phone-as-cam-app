@@ -11,10 +11,14 @@ import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 
 interface CameraController {
-    fun toggleFlashlight()
-    fun toggleCamera()
+    fun toggleFlashlight(): Boolean
+    fun toggleWideAngle(): Boolean
+    fun switchCameraFacing(): String
     fun toggleSelfieCamera(): Boolean
     fun setMegafon(active: Boolean): Boolean
+    fun isFrontFacing(): Boolean
+    fun isWideAngleActive(): Boolean
+    fun isFlashlightActive(): Boolean
 }
 
 class MjpegServer(port: Int, private val controller: CameraController) : NanoHTTPD(port) {
@@ -29,7 +33,29 @@ class MjpegServer(port: Int, private val controller: CameraController) : NanoHTT
     @Volatile var currentLat: Double = 0.0
     @Volatile var currentLng: Double = 0.0
     
+    @Volatile var lastSnapshotRequestTime: Long = 0L
+    @Volatile var lastFrontSnapshotRequestTime: Long = 0L
+
     var service: CameraStreamingService? = null
+
+    fun hasActiveClients(): Boolean {
+        if (service?.webRtcManager?.hasActivePeer() == true) return true
+        if (hasMicClients()) return true
+        val now = System.currentTimeMillis()
+        if (now - lastSnapshotRequestTime < 5000L) return true
+        if (now - lastFrontSnapshotRequestTime < 5000L) return true
+        return false
+    }
+
+    fun hasActiveFrontClients(): Boolean {
+        val now = System.currentTimeMillis()
+        return (now - lastFrontSnapshotRequestTime < 5000L)
+    }
+
+    fun hasActiveBackSnapshotClients(): Boolean {
+        val now = System.currentTimeMillis()
+        return (now - lastSnapshotRequestTime < 5000L)
+    }
 
     fun broadcastFrame(jpegData: ByteArray) {
         latestBackFrame.set(jpegData)
@@ -63,10 +89,19 @@ class MjpegServer(port: Int, private val controller: CameraController) : NanoHTT
             "/" -> {
                 val currentQuality = service?.jpegQuality?.get() ?: 20
                 val currentFps = service?.maxFps?.get() ?: 20
+                val currentRes = service?.targetResolution?.get() ?: "480p"
                 val isSelfieOn = service?.isFrontCameraEnabled?.get() ?: false
                 val selfieDisplay = if (isSelfieOn) "block" else "none"
                 val selfieBtnClass = if (isSelfieOn) "btn-selfie active" else "btn-selfie"
                 val selfieBtnText = if (isSelfieOn) "🤳 Selfie: An" else "🤳 Selfie: Aus"
+
+                val isFlashOn = controller.isFlashlightActive()
+                val isWideOn = controller.isWideAngleActive()
+                val isFrontFacing = controller.isFrontFacing()
+                val flashClass = if (isFlashOn) "btn-flash active" else "btn-flash"
+                val wideClass = if (isWideOn) "btn-zoom active" else "btn-zoom"
+                val wideText = if (isWideOn) "🔍 Weit: An" else "🔍 Weitwinkel"
+                val switchCamText = if (isFrontFacing) "🔄 Kamera: Selfie" else "🔄 Kamera wechseln"
 
                 val html = """
                     <!DOCTYPE html>
@@ -96,7 +131,10 @@ class MjpegServer(port: Int, private val controller: CameraController) : NanoHTT
                             button { padding: 10px 16px; font-size: 13px; font-weight: bold; border: none; border-radius: 8px; cursor: pointer; color: white; opacity: 0.9; transition: all 0.2s; }
                             button:hover { opacity: 1; transform: scale(1.04); }
                             .btn-flash { background: #007bff; }
+                            .btn-flash.active { background: #ffc107; color: #000; box-shadow: 0 0 10px rgba(255, 193, 7, 0.7); }
                             .btn-zoom { background: #6f42c1; }
+                            .btn-zoom.active { background: #9d4edd; box-shadow: 0 0 10px rgba(157, 78, 221, 0.7); }
+                            .btn-switch { background: #0d6efd; }
                             .btn-rotate { background: #17a2b8; }
                             .btn-selfie { background: #495057; }
                             .btn-selfie.active { background: #e8590c; box-shadow: 0 0 10px rgba(232, 89, 12, 0.6); }
@@ -110,10 +148,16 @@ class MjpegServer(port: Int, private val controller: CameraController) : NanoHTT
                             .dot { width: 10px; height: 10px; border-radius: 50%; background: #ffc107; display: inline-block; }
                             .dot.live { background: #28a745; box-shadow: 0 0 8px #28a745; }
                             
-                            .settings { position: absolute; top: 55px; left: 15px; z-index: 200; background: rgba(0,0,0,0.7); padding: 10px 12px; border-radius: 8px; font-size: 12px; }
-                            .settings label { display: block; margin-bottom: 6px; }
-                            .settings input[type=range] { width: 100px; vertical-align: middle; }
-                            .settings span { display: inline-block; width: 25px; text-align: right; }
+                            .settings { position: absolute; top: 55px; left: 15px; z-index: 200; background: rgba(0,0,0,0.8); padding: 12px 14px; border-radius: 10px; font-size: 12px; backdrop-filter: blur(6px); max-width: 250px; border: 1px solid rgba(255,255,255,0.15); box-shadow: 0 4px 15px rgba(0,0,0,0.5); }
+                            .settings label { display: flex; justify-content: space-between; align-items: center; margin-bottom: 7px; }
+                            .settings input[type=range] { width: 110px; vertical-align: middle; }
+                            .settings select { background: #222; color: #fff; border: 1px solid rgba(255,255,255,0.3); border-radius: 4px; padding: 3px 6px; font-size: 11px; }
+                            .settings span { display: inline-block; width: 30px; text-align: right; font-weight: bold; }
+                            .preset-group { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; margin-bottom: 10px; }
+                            .btn-preset { padding: 6px 4px; font-size: 11px; border: 1px solid rgba(255,255,255,0.2); border-radius: 6px; background: rgba(255,255,255,0.08); color: white; cursor: pointer; text-align: center; transition: all 0.2s; font-weight: normal; }
+                            .btn-preset:hover { background: rgba(255,255,255,0.22); transform: translateY(-1px); }
+                            .btn-preset.active { background: #0d6efd; border-color: #0d6efd; font-weight: bold; box-shadow: 0 0 8px rgba(13,110,253,0.6); }
+                            .fps-warning { color: #ffc107; font-size: 11px; margin-top: 4px; margin-bottom: 6px; line-height: 1.3; font-weight: bold; background: rgba(255, 193, 7, 0.15); padding: 5px 8px; border-radius: 6px; border: 1px solid rgba(255, 193, 7, 0.4); }
                         </style>
                     </head>
                     <body>
@@ -138,15 +182,31 @@ class MjpegServer(port: Int, private val controller: CameraController) : NanoHTT
                         </div>
                         
                         <div class="settings">
-                            <label>FPS: <input type="range" id="fps" min="5" max="30" step="5" value="$currentFps"> <span id="fVal">$currentFps</span></label>
-                            <label>Qualität: <input type="range" id="quality" min="10" max="80" step="10" value="$currentQuality"> <span id="qVal">$currentQuality</span></label>
+                            <div style="font-weight: bold; margin-bottom: 6px; color: #aaa; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px;">⚡ Streaming-Presets</div>
+                            <div class="preset-group">
+                                <button class="btn-preset" onclick="applyPreset('eco')" title="640x480, 15 FPS, 1.2 Mbps">🔋 Eco</button>
+                                <button class="btn-preset active" onclick="applyPreset('balanced')" title="720p HD, 20 FPS, 2.5 Mbps">⚖️ Standard</button>
+                                <button class="btn-preset" onclick="applyPreset('smooth')" title="720p HD, 30 FPS, 4.5 Mbps">🚀 Smooth</button>
+                                <button class="btn-preset" onclick="applyPreset('ultra')" title="1080p FHD, 60 FPS, 8.0 Mbps">🔥 Ultra 60</button>
+                            </div>
+                            <label>Auflösung:
+                                <select id="resSelect" onchange="onResChange(this.value)">
+                                    <option value="480p" ${if (currentRes == "480p") "selected" else ""}>480p (VGA)</option>
+                                    <option value="720p" ${if (currentRes == "720p") "selected" else ""}>720p (HD)</option>
+                                    <option value="1080p" ${if (currentRes == "1080p") "selected" else ""}>1080p (Full HD)</option>
+                                </select>
+                            </label>
+                            <label>FPS: <input type="range" id="fps" min="5" max="60" step="1" value="$currentFps"> <span id="fVal">$currentFps</span></label>
+                            <div id="fpsWarning" class="fps-warning" style="display: ${if (currentFps > 20) "block" else "none"};">⚠️ Über 20 FPS steigt der Akkuverbrauch &amp; Hitze an!</div>
+                            <label>Qualität: <input type="range" id="quality" min="10" max="95" step="5" value="$currentQuality"> <span id="qVal">$currentQuality</span></label>
                         </div>
                         
                         <div class="controls">
-                            <button class="btn-flash" onclick="fetch('/toggle_flashlight', {method:'POST'})" title="Taschenlampe">💡</button>
-                            <button class="btn-zoom" onclick="fetch('/toggle_camera', {method:'POST'})" title="Weit/Normal">🔄</button>
+                            <button class="$flashClass" id="flashBtn" onclick="toggleFlash()" title="Taschenlampe an/aus">💡</button>
+                            <button class="$wideClass" id="wideBtn" onclick="toggleWideAngle()" title="Weitwinkel (0.5x / Ultra-Wide)">$wideText</button>
+                            <button class="btn-switch" id="switchBtn" onclick="switchCamera()" title="Kamera wechseln (Hauptkamera / Frontkamera)">$switchCamText</button>
                             <button class="btn-rotate" onclick="rotateStream()" title="Bild um 90° nach links drehen">⟲ 90°</button>
-                            <button class="$selfieBtnClass" id="selfieBtn" onclick="toggleSelfie()" title="Selfie-Kamera an/aus">$selfieBtnText</button>
+                            <button class="$selfieBtnClass" id="selfieBtn" onclick="toggleSelfie()" title="Selfie-Kamera PiP an/aus">$selfieBtnText</button>
                             <button class="btn-audio muted" id="audioBtn" title="Audio">🔇 Ton an</button>
                             <button class="btn-megafon" id="megafonBtn" onclick="toggleMegafon()" title="Megafon: Mikrofon an Handy-Lautsprecher">📢 Megafon</button>
                         </div>
@@ -177,11 +237,62 @@ class MjpegServer(port: Int, private val controller: CameraController) : NanoHTT
                                 mainImg.style.transform = "rotate(" + currentRotation + "deg)";
                             }
 
-                            // --- Selfie Cam Toggle ---
+                            // --- Flashlight ---
+                            async function toggleFlash() {
+                                try {
+                                    const resp = await fetch('/toggle_flashlight', { method: 'POST' });
+                                    const data = await resp.json();
+                                    const btn = document.getElementById('flashBtn');
+                                    if (data.flashlight) {
+                                        btn.classList.add('active');
+                                    } else {
+                                        btn.classList.remove('active');
+                                    }
+                                } catch(e) {}
+                            }
+
+                            // --- Wide Angle Toggle ---
+                            async function toggleWideAngle() {
+                                try {
+                                    const resp = await fetch('/toggle_wide_angle', { method: 'POST' });
+                                    const data = await resp.json();
+                                    const btn = document.getElementById('wideBtn');
+                                    if (data.wideAngle) {
+                                        btn.classList.add('active');
+                                        btn.textContent = '🔍 Weit: An';
+                                    } else {
+                                        btn.classList.remove('active');
+                                        btn.textContent = '🔍 Weitwinkel';
+                                    }
+                                } catch(e) {}
+                            }
+
+                            // --- Main Camera Switch (Front <-> Back) ---
+                            async function switchCamera() {
+                                try {
+                                    const resp = await fetch('/switch_camera', { method: 'POST' });
+                                    const data = await resp.json();
+                                    const switchBtn = document.getElementById('switchBtn');
+                                    if (data.facing === 'front') {
+                                        switchBtn.textContent = '🔄 Kamera: Selfie';
+                                    } else {
+                                        switchBtn.textContent = '🔄 Kamera wechseln';
+                                    }
+                                } catch(e) {}
+                            }
+
+                            // --- Selfie Cam Toggle (PiP) ---
                             async function toggleSelfie() {
                                 try {
                                     const resp = await fetch('/toggle_selfie', { method: 'POST' });
                                     const data = await resp.json();
+                                    if (data.supported === false) {
+                                        alert('Dieses Smartphone unterstützt keine gleichzeitige Hardware-Doppelkamera (Concurrent Camera) für Bild-in-Bild.\n\nNutze den Button "🔄 Kamera wechseln", um die Kamera umzuschalten.');
+                                        selfiePip.style.display = 'none';
+                                        selfieBtn.classList.remove('active');
+                                        selfieBtn.textContent = '🤳 Selfie: Aus';
+                                        return;
+                                    }
                                     selfieActive = data.enabled;
                                     if (selfieActive) {
                                         selfiePip.style.display = 'block';
@@ -704,20 +815,82 @@ class MjpegServer(port: Int, private val controller: CameraController) : NanoHTT
                                 pollFront();
                             }
 
-                            // --- Settings ---
+                            // --- Settings & Presets ---
                             const fpsSlider = document.getElementById('fps');
                             const qualitySlider = document.getElementById('quality');
+                            const resSelect = document.getElementById('resSelect');
                             const fVal = document.getElementById('fVal');
                             const qVal = document.getElementById('qVal');
-                            
-                            fpsSlider.addEventListener('input', function() { fVal.textContent = this.value; });
-                            fpsSlider.addEventListener('change', function() {
-                                fetch('/settings?fps=' + this.value, {method:'POST'});
-                            });
-                            qualitySlider.addEventListener('input', function() { qVal.textContent = this.value; });
-                            qualitySlider.addEventListener('change', function() {
-                                fetch('/settings?quality=' + this.value, {method:'POST'});
-                            });
+                            const fpsWarning = document.getElementById('fpsWarning');
+
+                            function onFpsChange(val) {
+                                fVal.textContent = val;
+                                if (fpsWarning) {
+                                    fpsWarning.style.display = (parseInt(val, 10) > 20) ? 'block' : 'none';
+                                }
+                                clearPresetActive();
+                                fetch('/settings?fps=' + encodeURIComponent(val), { method: 'POST' }).catch(() => {});
+                            }
+
+                            function onQualityChange(val) {
+                                qVal.textContent = val;
+                                clearPresetActive();
+                                fetch('/settings?quality=' + encodeURIComponent(val), { method: 'POST' }).catch(() => {});
+                            }
+
+                            function onResChange(val) {
+                                clearPresetActive();
+                                fetch('/settings?res=' + encodeURIComponent(val), { method: 'POST' }).catch(() => {});
+                            }
+
+                            function clearPresetActive() {
+                                document.querySelectorAll('.btn-preset').forEach(b => b.classList.remove('active'));
+                            }
+
+                            function applyPreset(name) {
+                                clearPresetActive();
+                                let targetRes = "720p";
+                                let targetFps = 20;
+                                let targetQuality = 50;
+
+                                if (name === 'eco') {
+                                    targetRes = "480p";
+                                    targetFps = 15;
+                                    targetQuality = 20;
+                                } else if (name === 'balanced') {
+                                    targetRes = "720p";
+                                    targetFps = 20;
+                                    targetQuality = 50;
+                                } else if (name === 'smooth') {
+                                    targetRes = "720p";
+                                    targetFps = 30;
+                                    targetQuality = 70;
+                                } else if (name === 'ultra') {
+                                    targetRes = "1080p";
+                                    targetFps = 60;
+                                    targetQuality = 90;
+                                }
+
+                                if (event && event.target) {
+                                    event.target.classList.add('active');
+                                }
+
+                                resSelect.value = targetRes;
+                                fpsSlider.value = targetFps;
+                                qualitySlider.value = targetQuality;
+                                fVal.textContent = targetFps;
+                                qVal.textContent = targetQuality;
+                                if (fpsWarning) {
+                                    fpsWarning.style.display = (targetFps > 20) ? 'block' : 'none';
+                                }
+
+                                fetch('/settings?res=' + encodeURIComponent(targetRes) + '&fps=' + encodeURIComponent(targetFps) + '&quality=' + encodeURIComponent(targetQuality), { method: 'POST' }).catch(() => {});
+                            }
+
+                            fpsSlider.addEventListener('input', function() { onFpsChange(this.value); });
+                            fpsSlider.addEventListener('change', function() { onFpsChange(this.value); });
+                            qualitySlider.addEventListener('input', function() { onQualityChange(this.value); });
+                            qualitySlider.addEventListener('change', function() { onQualityChange(this.value); });
 
                             // --- Map ---
                             var map = L.map('map', { zoomControl: false, attributionControl: false }).setView([0, 0], 15);
@@ -818,8 +991,13 @@ class MjpegServer(port: Int, private val controller: CameraController) : NanoHTT
             }
             "/snapshot", "/snapshot_front" -> {
                 val isFront = uri == "/snapshot_front"
-                if (isFront && service?.isFrontCameraEnabled?.get() != true) {
-                    return newFixedLengthResponse(Response.Status.NO_CONTENT, "text/plain", "Front camera disabled")
+                if (isFront) {
+                    lastFrontSnapshotRequestTime = System.currentTimeMillis()
+                    if (service?.isFrontCameraEnabled?.get() != true) {
+                        return newFixedLengthResponse(Response.Status.NO_CONTENT, "text/plain", "Front camera disabled")
+                    }
+                } else {
+                    lastSnapshotRequestTime = System.currentTimeMillis()
                 }
                 val frame = if (isFront) latestFrontFrame.get() else latestBackFrame.get()
                 if (frame == null) {
@@ -838,18 +1016,26 @@ class MjpegServer(port: Int, private val controller: CameraController) : NanoHTT
                 if (session.method == Method.POST) {
                     val params = session.parms
                     params["quality"]?.toIntOrNull()?.let { q ->
-                        service?.jpegQuality?.set(q.coerceIn(10, 90))
+                        service?.setStreamingQuality(q.coerceIn(10, 95))
                     }
                     params["fps"]?.toIntOrNull()?.let { f ->
-                        service?.maxFps?.set(f.coerceIn(2, 30))
+                        service?.setStreamingFps(f.coerceIn(2, 60))
+                    }
+                    params["res"]?.let { r ->
+                        service?.setStreamingResolution(r)
                     }
                     return newFixedLengthResponse(Response.Status.OK, "text/plain", "OK")
                 }
             }
             "/toggle_selfie" -> {
                 if (session.method == Method.POST) {
-                    val enabled = controller.toggleSelfieCamera()
-                    val res = newFixedLengthResponse(Response.Status.OK, "application/json", "{\"enabled\": $enabled}")
+                    val supported = service?.isConcurrentSupported() ?: false
+                    val enabled = if (supported) {
+                        controller.toggleSelfieCamera()
+                    } else {
+                        false
+                    }
+                    val res = newFixedLengthResponse(Response.Status.OK, "application/json", "{\"enabled\": $enabled, \"supported\": $supported}")
                     res.addHeader("Access-Control-Allow-Origin", "*")
                     return res
                 }
@@ -892,14 +1078,26 @@ class MjpegServer(port: Int, private val controller: CameraController) : NanoHTT
             }
             "/toggle_flashlight" -> {
                 if (session.method == Method.POST) {
-                    controller.toggleFlashlight()
-                    return newFixedLengthResponse(Response.Status.OK, "text/plain", "OK")
+                    val on = controller.toggleFlashlight()
+                    val res = newFixedLengthResponse(Response.Status.OK, "application/json", "{\"flashlight\": $on}")
+                    res.addHeader("Access-Control-Allow-Origin", "*")
+                    return res
                 }
             }
-            "/toggle_camera" -> {
+            "/toggle_camera", "/toggle_wide_angle" -> {
                 if (session.method == Method.POST) {
-                    controller.toggleCamera()
-                    return newFixedLengthResponse(Response.Status.OK, "text/plain", "OK")
+                    val isWide = controller.toggleWideAngle()
+                    val res = newFixedLengthResponse(Response.Status.OK, "application/json", "{\"wideAngle\": $isWide}")
+                    res.addHeader("Access-Control-Allow-Origin", "*")
+                    return res
+                }
+            }
+            "/switch_camera" -> {
+                if (session.method == Method.POST) {
+                    val facing = controller.switchCameraFacing()
+                    val res = newFixedLengthResponse(Response.Status.OK, "application/json", "{\"facing\": \"$facing\"}")
+                    res.addHeader("Access-Control-Allow-Origin", "*")
+                    return res
                 }
             }
             "/megafon" -> {

@@ -31,9 +31,67 @@ class WebRtcManager(private val context: Context) {
     private var sessionAudioTrack: AudioTrack? = null
 
     private var currentPeerConnection: PeerConnection? = null
+    private var currentVideoSender: RtpSender? = null
+    private val isPeerConnected = java.util.concurrent.atomic.AtomicBoolean(false)
     val gatheredCandidates = Collections.synchronizedList(mutableListOf<IceCandidate>())
 
-    fun init() {
+    @Volatile private var currentWidth = 640
+    @Volatile private var currentHeight = 480
+    @Volatile private var currentTargetFps = 20
+
+    fun hasActivePeer(): Boolean = isPeerConnected.get()
+
+    fun updateResolution(width: Int, height: Int) {
+        currentWidth = width
+        currentHeight = height
+        try {
+            videoSource?.adaptOutputFormat(currentWidth, currentHeight, currentTargetFps)
+            Log.i(TAG, "WebRTC Resolution adapted to ${currentWidth}x${currentHeight} @ ${currentTargetFps}fps")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to update WebRTC resolution", e)
+        }
+    }
+
+    fun updateFps(fps: Int) {
+        currentTargetFps = fps
+        try {
+            videoSource?.adaptOutputFormat(currentWidth, currentHeight, fps)
+            currentVideoSender?.let { sender ->
+                val params = sender.parameters
+                for (encoding in params.encodings) {
+                    encoding.maxFramerate = fps
+                }
+                sender.parameters = params
+            }
+            Log.i(TAG, "WebRTC FPS adapted to $fps")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to update WebRTC FPS", e)
+        }
+    }
+
+    fun updateQuality(quality: Int) {
+        try {
+            // Map quality (10 - 100) to bitrate:
+            // 10% -> 400 kbps, 50% -> 2.5 Mbps, 80% -> 5.0 Mbps, 100% -> 8.0 Mbps
+            val clampedQuality = quality.coerceIn(10, 100)
+            val maxBitrateBps = (clampedQuality * 75_000 + 200_000).coerceIn(400_000, 8_500_000)
+            val minBitrateBps = (maxBitrateBps / 4).coerceAtLeast(150_000)
+
+            currentVideoSender?.let { sender ->
+                val params = sender.parameters
+                for (encoding in params.encodings) {
+                    encoding.maxBitrateBps = maxBitrateBps
+                    encoding.minBitrateBps = minBitrateBps
+                }
+                sender.parameters = params
+            }
+            Log.i(TAG, "WebRTC Bitrate updated for quality $quality%: max=${maxBitrateBps / 1000}kbps, min=${minBitrateBps / 1000}kbps")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to update WebRTC bitrate for quality $quality", e)
+        }
+    }
+
+    fun init(initialFps: Int = 20) {
         val options = PeerConnectionFactory.InitializationOptions.builder(context)
             .setEnableInternalTracer(false)
             .createInitializationOptions()
@@ -60,7 +118,7 @@ class WebRtcManager(private val context: Context) {
 
         // Video
         videoSource = peerConnectionFactory?.createVideoSource(false)
-        videoSource?.adaptOutputFormat(640, 480, 30)
+        videoSource?.adaptOutputFormat(640, 480, initialFps)
         videoSource?.capturerObserver?.onCapturerStarted(true)
         videoTrack = peerConnectionFactory?.createVideoTrack("ARDAMSv0", videoSource)
 
@@ -202,6 +260,18 @@ class WebRtcManager(private val context: Context) {
             }
             override fun onIceConnectionChange(state: PeerConnection.IceConnectionState?) {
                 Log.d(TAG, "ICE Connection State: $state")
+                when (state) {
+                    PeerConnection.IceConnectionState.CONNECTED,
+                    PeerConnection.IceConnectionState.COMPLETED -> {
+                        isPeerConnected.set(true)
+                    }
+                    PeerConnection.IceConnectionState.DISCONNECTED,
+                    PeerConnection.IceConnectionState.FAILED,
+                    PeerConnection.IceConnectionState.CLOSED -> {
+                        isPeerConnected.set(false)
+                    }
+                    else -> {}
+                }
             }
             override fun onIceConnectionReceivingChange(receiving: Boolean) {}
             override fun onIceGatheringChange(state: PeerConnection.IceGatheringState?) {
@@ -232,16 +302,22 @@ class WebRtcManager(private val context: Context) {
 
         val streamIds = listOf("ARDAMS")
         val rtpSender = videoTrack?.let { pc.addTrack(it, streamIds) }
+        currentVideoSender = rtpSender
         pc.addTrack(freshAudioTrack, streamIds)
 
+        val currentFps = (context as? CameraStreamingService)?.maxFps?.get() ?: 20
+        val currentQuality = (context as? CameraStreamingService)?.jpegQuality?.get() ?: 20
+        val clampedQuality = currentQuality.coerceIn(10, 100)
+        val initialMaxBitrate = (clampedQuality * 40_000).coerceIn(400_000, 5_000_000)
+        val initialMinBitrate = (initialMaxBitrate / 4).coerceAtLeast(150_000)
         rtpSender?.let { sender ->
             try {
                 val params = sender.parameters
                 params.degradationPreference = RtpParameters.DegradationPreference.MAINTAIN_FRAMERATE
                 for (encoding in params.encodings) {
-                    encoding.maxBitrateBps = 2_500_000
-                    encoding.minBitrateBps = 800_000
-                    encoding.maxFramerate = 30
+                    encoding.maxBitrateBps = initialMaxBitrate
+                    encoding.minBitrateBps = initialMinBitrate
+                    encoding.maxFramerate = currentFps
                 }
                 sender.parameters = params
             } catch (e: Exception) {
@@ -372,6 +448,8 @@ class WebRtcManager(private val context: Context) {
     }
 
     fun release() {
+        isPeerConnected.set(false)
+        currentVideoSender = null
         currentPeerConnection?.close()
         currentPeerConnection = null
 
