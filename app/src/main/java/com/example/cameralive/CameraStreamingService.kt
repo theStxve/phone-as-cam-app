@@ -265,7 +265,7 @@ class CameraStreamingService : LifecycleService(), CameraController, LocationLis
 
         // --- HIGH-RES NATIVE MODE (Auto-detects best 50MP+ sensor, brief pause & resume) ---
         if (highResCameraId == null) {
-            highResCameraId = findHighResCameraId()
+            findHighResCamera()
         }
 
         val photoLatch = CountDownLatch(1)
@@ -289,10 +289,23 @@ class CameraStreamingService : LifecycleService(), CameraController, LocationLis
             }
         }
 
-        val captureUseCase = ImageCapture.Builder()
+        val captureBuilder = ImageCapture.Builder()
             .setCaptureMode(ImageCapture.CAPTURE_MODE_MAXIMIZE_QUALITY)
             .setJpegQuality(photoJpegQuality.get())
-            .setResolutionSelector(
+
+        if (highResTargetSize != null) {
+            captureBuilder.setResolutionSelector(
+                ResolutionSelector.Builder()
+                    .setResolutionStrategy(
+                        ResolutionStrategy(
+                            highResTargetSize!!,
+                            ResolutionStrategy.FALLBACK_RULE_CLOSEST_HIGHER_THEN_LOWER
+                        )
+                    )
+                    .build()
+            )
+        } else {
+            captureBuilder.setResolutionSelector(
                 ResolutionSelector.Builder()
                     .setResolutionStrategy(
                         ResolutionStrategy(
@@ -302,7 +315,18 @@ class CameraStreamingService : LifecycleService(), CameraController, LocationLis
                     )
                     .build()
             )
-            .build()
+        }
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && isUltraHighResMode) {
+            androidx.camera.camera2.interop.Camera2Interop.Extender(captureBuilder).apply {
+                setCaptureRequestOption(
+                    android.hardware.camera2.CaptureRequest.SENSOR_PIXEL_MODE,
+                    android.hardware.camera2.CameraMetadata.SENSOR_PIXEL_MODE_MAXIMUM_RESOLUTION
+                )
+            }
+        }
+
+        val captureUseCase = captureBuilder.build()
 
         // Perform binding + capture on the main thread (CameraX requirement)
         val mainHandler = android.os.Handler(mainLooper)
@@ -452,32 +476,89 @@ class CameraStreamingService : LifecycleService(), CameraController, LocationLis
     override fun onProviderEnabled(provider: String) {}
     override fun onProviderDisabled(provider: String) {}
 
-    // Physical camera ID of the back sensor with the most megapixels (e.g. the 50MP sensor)
+    // Physical camera ID and native full resolution for highest quality photo
     @Volatile private var highResCameraId: String? = null
+    @Volatile private var highResTargetSize: Size? = null
+    @Volatile private var isUltraHighResMode = false
 
-    /** Scans all back-facing physical cameras and returns the ID of the one with the highest JPEG resolution. */
-    private fun findHighResCameraId(): String? {
+    /** Scans all back-facing physical cameras (including logical multi-cam sub-sensors and maximum resolution maps) */
+    @androidx.annotation.OptIn(androidx.camera.camera2.interop.ExperimentalCamera2Interop::class)
+    private fun findHighResCamera(): String? {
         try {
             val cm = getSystemService(Context.CAMERA_SERVICE) as CameraManager
             var bestId: String? = null
+            var bestSize: Size? = null
+            var ultra = false
             var maxPixels = 0L
-            for (id in cm.cameraIdList) {
-                val chars = cm.getCameraCharacteristics(id)
-                if (chars.get(CameraCharacteristics.LENS_FACING) != CameraCharacteristics.LENS_FACING_BACK) continue
-                val map = chars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP) ?: continue
-                val jpegSizes = map.getOutputSizes(android.graphics.ImageFormat.JPEG) ?: continue
-                for (size in jpegSizes) {
+
+            fun evaluateSizes(id: String, sizes: Array<Size>?, isMaxRes: Boolean) {
+                if (sizes == null) return
+                for (size in sizes) {
                     val pixels = size.width.toLong() * size.height
                     if (pixels > maxPixels) {
                         maxPixels = pixels
                         bestId = id
+                        bestSize = size
+                        ultra = isMaxRes
                     }
                 }
             }
-            if (bestId != null) {
+
+            val allCameraIds = cm.cameraIdList.toMutableSet()
+            for (id in cm.cameraIdList) {
+                try {
+                    val chars = cm.getCameraCharacteristics(id)
+                    if (chars.get(CameraCharacteristics.LENS_FACING) != CameraCharacteristics.LENS_FACING_BACK) continue
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                        allCameraIds.addAll(chars.physicalCameraIds)
+                    }
+                } catch (e: Exception) {}
+            }
+
+            for (id in allCameraIds) {
+                try {
+                    val chars = cm.getCameraCharacteristics(id)
+                    val facing = chars.get(CameraCharacteristics.LENS_FACING)
+                    if (facing != null && facing != CameraCharacteristics.LENS_FACING_BACK) continue
+
+                    // 1. Check standard stream configuration map
+                    val stdMap = chars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
+                    evaluateSizes(id, stdMap?.getOutputSizes(ImageFormat.JPEG), false)
+
+                    // 2. Check Android 12+ (API 31+) ultra-high-resolution maximum resolution map (50MP/108MP/200MP Quad-Bayer unbinned)
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                        val maxResMap = chars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP_MAXIMUM_RESOLUTION)
+                        evaluateSizes(id, maxResMap?.getOutputSizes(ImageFormat.JPEG), true)
+                    }
+
+                    // 3. Check pixel array size as fallback
+                    val arraySize = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                        chars.get(CameraCharacteristics.SENSOR_INFO_PIXEL_ARRAY_SIZE_MAXIMUM_RESOLUTION)
+                            ?: chars.get(CameraCharacteristics.SENSOR_INFO_PIXEL_ARRAY_SIZE)
+                    } else {
+                        chars.get(CameraCharacteristics.SENSOR_INFO_PIXEL_ARRAY_SIZE)
+                    }
+                    if (arraySize != null) {
+                        val p = arraySize.width.toLong() * arraySize.height
+                        if (p > maxPixels && bestSize == null) {
+                            maxPixels = p
+                            bestId = id
+                            bestSize = arraySize
+                        }
+                    }
+                } catch (e: Exception) {
+                    Log.w(TAG, "Error querying camera $id", e)
+                }
+            }
+
+            highResCameraId = bestId
+            highResTargetSize = bestSize
+            isUltraHighResMode = ultra
+
+            if (bestId != null && bestSize != null) {
                 val mp = (maxPixels + 500_000) / 1_000_000
-                detectedCameraLabel = "Sensor #$bestId (~${mp} MP)"
-                Log.i(TAG, "Highest-res back camera: ID=$bestId  ($mp MP)")
+                detectedCameraLabel = "Sensor #$bestId (${bestSize.width}x${bestSize.height}, ~${mp} MP)"
+                Log.i(TAG, "Highest-res photo sensor: ID=$bestId (${bestSize.width}x${bestSize.height}, $mp MP, ultra=$ultra)")
             } else {
                 detectedCameraLabel = "Standard-Sensor"
             }
@@ -531,7 +612,7 @@ class CameraStreamingService : LifecycleService(), CameraController, LocationLis
                 ultraWideCameraId = findUltraWideCameraId()
             }
             if (highResCameraId == null) {
-                highResCameraId = findHighResCameraId()
+                findHighResCamera()
             }
 
             val currentRes = targetResolution.get() ?: "480p"
