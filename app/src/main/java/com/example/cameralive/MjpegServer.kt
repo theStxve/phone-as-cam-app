@@ -268,7 +268,7 @@ class MjpegServer(port: Int, private val controller: CameraController) : NanoHTT
                             .setting-row input[type=range] { flex: 1; min-width: 0; accent-color: #4dabf7; cursor: pointer; }
                             .setting-row select { background: #1e1e2c; color: #fff; border: 1px solid rgba(255,255,255,0.25); border-radius: 6px; padding: 5px 8px; font-size: 12px; flex: 1; }
                             .val-badge { font-size: 12px; font-weight: 700; color: #4dabf7; width: 42px; text-align: right; flex-shrink: 0; }
-                            .preset-group { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin-bottom: 12px; }
+                            .preset-group { display: grid; grid-template-columns: repeat(auto-fit, minmax(60px, 1fr)); gap: 6px; margin-bottom: 12px; }
                             .btn-preset { padding: 7px 4px; font-size: 11px; border: 1px solid rgba(255,255,255,0.18); border-radius: 8px; background: rgba(255,255,255,0.06); color: white; cursor: pointer; text-align: center; font-weight: 500; transition: all 0.15s; }
                             .btn-preset:hover { background: rgba(255,255,255,0.15); }
                             .btn-preset.active { background: #1971c2; border-color: #1971c2; font-weight: 700; box-shadow: 0 0 10px rgba(25,113,194,0.6); }
@@ -341,17 +341,19 @@ class MjpegServer(port: Int, private val controller: CameraController) : NanoHTT
 
                                 <div class="section-label">⚡ Streaming-Presets</div>
                                 <div class="preset-group">
-                                    <button class="btn-preset" onclick="applyPreset('eco')" title="640x480, 15 FPS">🔋 Eco</button>
-                                    <button class="btn-preset active" onclick="applyPreset('balanced')" title="720p, 20 FPS">⚖️ HD</button>
-                                    <button class="btn-preset" onclick="applyPreset('smooth')" title="720p, 30 FPS">🚀 Smooth</button>
-                                    <button class="btn-preset" onclick="applyPreset('ultra')" title="1080p, 60 FPS">🔥 Ultra</button>
+                                    <button class="btn-preset ${if (currentRes == "480p" && currentFps == 15) "active" else ""}" onclick="applyPreset('eco')" title="640x480, 15 FPS">🔋 Eco</button>
+                                    <button class="btn-preset ${if (currentRes == "720p" && currentFps == 20) "active" else ""}" onclick="applyPreset('balanced')" title="720p, 20 FPS">⚖️ HD</button>
+                                    <button class="btn-preset ${if (currentRes == "720p" && currentFps == 30) "active" else ""}" onclick="applyPreset('smooth')" title="720p, 30 FPS">🚀 Smooth</button>
+                                    <button class="btn-preset ${if (currentRes == "1080p" && currentFps == 60) "active" else ""}" onclick="applyPreset('ultra')" title="1080p, 60 FPS">🔥 Ultra</button>
+                                    <button class="btn-preset ${if (currentRes == "verlustfrei" || currentRes == "max_4_3") "active" else ""}" onclick="applyPreset('verlustfrei')" title="Voller 4:3 Sensor ohne Beschnitt, max. Details">💎 Verlustfrei</button>
                                 </div>
                                 <div class="setting-row">
                                     <label>Auflösung:
                                         <select id="resSelect" onchange="onResChange(this.value)">
-                                            <option value="480p" ${if (currentRes == "480p") "selected" else ""}>480p (VGA)</option>
-                                            <option value="720p" ${if (currentRes == "720p") "selected" else ""}>720p (HD)</option>
-                                            <option value="1080p" ${if (currentRes == "1080p") "selected" else ""}>1080p (FHD)</option>
+                                            <option value="480p" ${if (currentRes == "480p") "selected" else ""}>480p (VGA 4:3)</option>
+                                            <option value="720p" ${if (currentRes == "720p") "selected" else ""}>720p (HD 16:9)</option>
+                                            <option value="1080p" ${if (currentRes == "1080p") "selected" else ""}>1080p (FHD 16:9)</option>
+                                            <option value="verlustfrei" ${if (currentRes == "verlustfrei" || currentRes == "max_4_3") "selected" else ""}>💎 Verlustfrei (Voller 4:3 Sensor)</option>
                                         </select>
                                     </label>
                                 </div>
@@ -1858,6 +1860,10 @@ class MjpegServer(port: Int, private val controller: CameraController) : NanoHTT
                                 } else if (name === 'ultra') {
                                     targetRes = "1080p";
                                     targetFps = 60;
+                                    targetQuality = 90;
+                                } else if (name === 'verlustfrei') {
+                                    targetRes = "verlustfrei";
+                                    targetFps = 25;
                                     targetQuality = 90;
                                 }
 

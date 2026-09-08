@@ -215,12 +215,14 @@ class CameraStreamingService : LifecycleService(), CameraController, LocationLis
 
     fun setStreamingResolution(res: String) {
         val validRes = when (res.lowercase()) {
-            "720p", "hd" -> "720p"
+            "verlustfrei", "4:3", "max_4_3" -> "verlustfrei"
             "1080p", "fhd" -> "1080p"
+            "720p", "hd" -> "720p"
             else -> "480p"
         }
         val prev = targetResolution.getAndSet(validRes)
         val (w, h) = when (validRes) {
+            "verlustfrei" -> Pair(1920, 1440)
             "1080p" -> Pair(1920, 1080)
             "720p" -> Pair(1280, 720)
             else -> Pair(640, 480)
@@ -666,6 +668,7 @@ class CameraStreamingService : LifecycleService(), CameraController, LocationLis
 
             val currentRes = targetResolution.get() ?: "480p"
             val (targetSize, targetAspect) = when (currentRes) {
+                "verlustfrei", "4:3", "max_4_3" -> Pair(Size(1920, 1440), AspectRatio.RATIO_4_3)
                 "1080p" -> Pair(Size(1920, 1080), AspectRatio.RATIO_16_9)
                 "720p" -> Pair(Size(1280, 720), AspectRatio.RATIO_16_9)
                 else -> Pair(Size(640, 480), AspectRatio.RATIO_4_3)
