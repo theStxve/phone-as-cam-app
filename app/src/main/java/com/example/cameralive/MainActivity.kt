@@ -45,6 +45,16 @@ class MainActivity : ComponentActivity() {
                     GoogleDriveBackupManager.setAccountConnected(account.email, true, this)
                     Toast.makeText(this, "Google Drive verknüpft: ${account.email}", Toast.LENGTH_SHORT).show()
                 }
+            } catch (e: com.google.android.gms.common.api.ApiException) {
+                Log.e("MainActivity", "Google Sign-In failed: code=${e.statusCode}", e)
+                val msg = when (e.statusCode) {
+                    10 -> "Fehler 10 (DEVELOPER_ERROR): Die App ist in Google Cloud noch nicht mit dem SHA-1 Schlüssel verknüpft."
+                    12500 -> "Fehler 12500: Sign-In fehlgeschlagen (Google Play Services)."
+                    7 -> "Fehler 7: Keine Internetverbindung."
+                    16 -> "Anmeldung abgebrochen."
+                    else -> "Fehler ${e.statusCode}: ${e.localizedMessage ?: "Unbekannt"}"
+                }
+                Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
             } catch (e: Exception) {
                 Log.e("MainActivity", "Google Sign-In failed", e)
                 Toast.makeText(this, "Google Anmeldung fehlgeschlagen: ${e.localizedMessage}", Toast.LENGTH_LONG).show()
