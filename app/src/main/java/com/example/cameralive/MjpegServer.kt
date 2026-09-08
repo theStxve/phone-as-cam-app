@@ -20,6 +20,10 @@ interface CameraController {
     fun isWideAngleActive(): Boolean
     fun isFlashlightActive(): Boolean
     fun setRemoteAudioEnabled(enabled: Boolean)
+    fun setExposureCompensation(index: Int): Int
+    fun getExposureCompensation(): Int
+    fun getExposureRange(): Pair<Int, Int>
+    fun getExposureStep(): Float
 }
 
 class MjpegServer(port: Int, private val controller: CameraController) : NanoHTTPD(port) {
@@ -141,6 +145,11 @@ class MjpegServer(port: Int, private val controller: CameraController) : NanoHTT
                 val switchCamText = if (isFrontFacing) "🔄 Kamera: Selfie" else "🔄 Kamera wechseln"
                 val driveEmail = GoogleDriveBackupManager.connectedAccountEmail ?: ""
                 val isDriveLinked = GoogleDriveBackupManager.isAutoBackupEnabled && driveEmail.isNotBlank()
+                val expRange = controller.getExposureRange()
+                val expCurrent = controller.getExposureCompensation()
+                val expStep = controller.getExposureStep()
+                val expEvVal = expCurrent * expStep
+                val expEvLabel = String.format(java.util.Locale.US, "%+.1f EV", expEvVal)
 
                 val html = """
                     <!DOCTYPE html>
@@ -352,6 +361,17 @@ class MjpegServer(port: Int, private val controller: CameraController) : NanoHTT
                                 <div id="fpsWarning" class="fps-warning" style="display: ${if (currentFps > 20) "block" else "none"};">⚠️ Über 20 FPS = mehr Hitze &amp; Akku!</div>
                                 <div class="setting-row">
                                     <label>Stream-Qualität: <input type="range" id="quality" min="10" max="95" step="5" value="$currentQuality"> <span class="val-badge" id="qVal">$currentQuality</span></label>
+                                </div>
+
+                                <hr class="section-divider">
+                                <div class="section-label">☀️ Belichtung &amp; Nacht-Optimierung</div>
+                                <div class="setting-row">
+                                    <label>Belichtung (EV): <input type="range" id="exposureSlider" min="${expRange.first}" max="${expRange.second}" step="1" value="$expCurrent" oninput="onExposureInput(this.value)" onchange="onExposureChange(this.value)"> <span class="val-badge" id="evVal" style="color:#ffd43b;">$expEvLabel</span></label>
+                                </div>
+                                <div class="preset-group" style="grid-template-columns: repeat(3, 1fr); margin-bottom: 8px;">
+                                    <button class="btn-preset ${if (expCurrent < -1) "active" else ""}" id="evDarkBtn" onclick="setExposurePreset(-3)" title="Dunkler für Gegenlicht &amp; helle Szenen">☀️ Hell (-1 EV)</button>
+                                    <button class="btn-preset ${if (expCurrent == 0) "active" else ""}" id="evAutoBtn" onclick="setExposurePreset(0)" title="Automatische Standard-Belichtung">⚖️ Auto (0 EV)</button>
+                                    <button class="btn-preset ${if (expCurrent > 1) "active" else ""}" id="evNightBtn" onclick="setExposurePreset(3)" title="Heller für dunkle Nacht-Szenen">🌙 Nacht (+1 EV)</button>
                                 </div>
 
                                 <hr class="section-divider">
@@ -1864,6 +1884,58 @@ class MjpegServer(port: Int, private val controller: CameraController) : NanoHTT
                             photoQualitySlider.addEventListener('input', function() { onPhotoQualityChange(this.value); });
                             photoQualitySlider.addEventListener('change', function() { onPhotoQualityChange(this.value); });
 
+                            // --- Exposure Compensation Control ---
+                            let exposureStep = $expStep;
+
+                            function onExposureInput(val) {
+                                const intVal = parseInt(val, 10);
+                                const ev = (intVal * exposureStep).toFixed(1);
+                                const evVal = document.getElementById('evVal');
+                                if (evVal) evVal.textContent = (intVal > 0 ? '+' : '') + ev + ' EV';
+
+                                const autoBtn = document.getElementById('evAutoBtn');
+                                const darkBtn = document.getElementById('evDarkBtn');
+                                const nightBtn = document.getElementById('evNightBtn');
+                                if (autoBtn) autoBtn.classList.toggle('active', intVal === 0);
+                                if (darkBtn) darkBtn.classList.toggle('active', intVal < -1);
+                                if (nightBtn) nightBtn.classList.toggle('active', intVal > 1);
+                            }
+
+                            async function onExposureChange(val) {
+                                onExposureInput(val);
+                                try {
+                                    await fetch('/set_exposure?index=' + encodeURIComponent(val), { method: 'POST' });
+                                } catch(e) {}
+                            }
+
+                            function setExposurePreset(idx) {
+                                const slider = document.getElementById('exposureSlider');
+                                if (slider) {
+                                    slider.value = idx;
+                                    onExposureChange(idx);
+                                }
+                            }
+
+                            async function fetchExposureState() {
+                                try {
+                                    const resp = await fetch('/exposure_state');
+                                    if (resp.ok) {
+                                        const data = await resp.json();
+                                        if (data.step) exposureStep = data.step;
+                                        const slider = document.getElementById('exposureSlider');
+                                        if (slider) {
+                                            if (data.min !== undefined) slider.min = data.min;
+                                            if (data.max !== undefined) slider.max = data.max;
+                                            if (data.current !== undefined && document.activeElement !== slider) {
+                                                slider.value = data.current;
+                                                onExposureInput(data.current);
+                                            }
+                                        }
+                                    }
+                                } catch(e) {}
+                            }
+                            fetchExposureState();
+
                             function onGpsIntervalChange(val) {
                                 fetch('/set_gps_interval?interval=' + encodeURIComponent(val), { method: 'POST' }).catch(() => {});
                             }
@@ -2184,6 +2256,29 @@ class MjpegServer(port: Int, private val controller: CameraController) : NanoHTT
                     service?.setFastPhotoMode(enabled)
                     return newFixedLengthResponse(Response.Status.OK, "application/json", "{\"fastPhotoMode\": $enabled}")
                 }
+            }
+            "/set_exposure" -> {
+                if (session.method == Method.POST || session.method == Method.GET) {
+                    val indexStr = session.parms["index"] ?: session.parms["value"] ?: "0"
+                    val idx = indexStr.toIntOrNull() ?: 0
+                    val newIdx = controller.setExposureCompensation(idx)
+                    val step = controller.getExposureStep()
+                    val ev = newIdx * step
+                    val json = """{"success":true,"exposure":$newIdx,"ev":$ev}"""
+                    val resp = newFixedLengthResponse(Response.Status.OK, "application/json", json)
+                    resp.addHeader("Access-Control-Allow-Origin", "*")
+                    return resp
+                }
+            }
+            "/exposure_state" -> {
+                val current = controller.getExposureCompensation()
+                val range = controller.getExposureRange()
+                val step = controller.getExposureStep()
+                val ev = current * step
+                val json = """{"min":${range.first},"max":${range.second},"step":$step,"current":$current,"ev":$ev}"""
+                val resp = newFixedLengthResponse(Response.Status.OK, "application/json", json)
+                resp.addHeader("Access-Control-Allow-Origin", "*")
+                return resp
             }
             "/heartbeat" -> {
                 val sid = session.parms["session_id"]

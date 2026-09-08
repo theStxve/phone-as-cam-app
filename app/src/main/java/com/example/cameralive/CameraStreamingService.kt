@@ -90,6 +90,7 @@ class CameraStreamingService : LifecycleService(), CameraController, LocationLis
     val maxFps = AtomicInteger(20)
     val targetResolution = AtomicReference<String>("480p") // "480p", "720p", "1080p"
     val isFrontCameraEnabled = AtomicBoolean(false)
+    val currentExposureIndex = AtomicInteger(0)
     
     @Volatile private var lastBackFrameTime = 0L
     @Volatile private var lastFrontFrameTime = 0L
@@ -146,6 +147,8 @@ class CameraStreamingService : LifecycleService(), CameraController, LocationLis
         WebhookManager.init(this)
         GoogleDriveBackupManager.init(this)
         AiMotionDetector.init(this)
+        val prefs = getSharedPreferences("CameraLivePrefs", Context.MODE_PRIVATE)
+        currentExposureIndex.set(prefs.getInt("KEY_EXPOSURE_INDEX", 0))
         try {
             registerReceiver(batteryReceiver, android.content.IntentFilter(Intent.ACTION_BATTERY_CHANGED))
         } catch (e: Exception) {
@@ -784,6 +787,7 @@ class CameraStreamingService : LifecycleService(), CameraController, LocationLis
                     imageCapture = primaryImageCapture
                     applyTorchState(isFlashlightOn)
                     applyWideAngleIfActive()
+                    applyExposureCompensation()
                     observeCameraErrors(activeCamera)
                     Log.i(TAG, "Concurrent cameras bound successfully (with ImageCapture)")
                     return@addListener
@@ -822,6 +826,7 @@ class CameraStreamingService : LifecycleService(), CameraController, LocationLis
                     applyTorchState(isFlashlightOn)
                     applyWideAngleIfActive()
                 }
+                applyExposureCompensation()
                 observeCameraErrors(activeCamera)
                 Log.i(TAG, "Bound primary camera + ImageCapture: facing=$currentLensFacing, wideAngle=$isWideAngle")
             } catch (exc: Exception) {
@@ -834,6 +839,7 @@ class CameraStreamingService : LifecycleService(), CameraController, LocationLis
                         applyTorchState(isFlashlightOn)
                         applyWideAngleIfActive()
                     }
+                    applyExposureCompensation()
                     observeCameraErrors(activeCamera)
                     Log.i(TAG, "Bound primary camera without ImageCapture (fallback)")
                 } catch (exc2: Exception) {
@@ -841,6 +847,7 @@ class CameraStreamingService : LifecycleService(), CameraController, LocationLis
                     try {
                         currentLensFacing = CameraSelector.LENS_FACING_BACK
                         activeCamera = cameraProvider.bindToLifecycle(this, CameraSelector.DEFAULT_BACK_CAMERA, primaryAnalyzer)
+                        applyExposureCompensation()
                     } catch (e2: Exception) {
                         Log.e(TAG, "Fatal: failed to bind default back camera", e2)
                     }
@@ -848,6 +855,23 @@ class CameraStreamingService : LifecycleService(), CameraController, LocationLis
             }
 
         }, ContextCompat.getMainExecutor(this))
+    }
+
+    private fun applyExposureCompensation() {
+        val cam = activeCamera ?: return
+        val exposureState = cam.cameraInfo.exposureState
+        if (!exposureState.isExposureCompensationSupported) {
+            Log.i(TAG, "Exposure compensation not supported on active camera")
+            return
+        }
+        val range = exposureState.exposureCompensationRange
+        val targetIndex = currentExposureIndex.get().coerceIn(range.lower, range.upper)
+        try {
+            cam.cameraControl.setExposureCompensationIndex(targetIndex)
+            Log.i(TAG, "Applied exposure compensation index: $targetIndex (Range: $range, Step: ${exposureState.exposureCompensationStep})")
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to apply exposure compensation index $targetIndex", e)
+        }
     }
 
     private fun applyWideAngleIfActive() {
@@ -1275,6 +1299,42 @@ class CameraStreamingService : LifecycleService(), CameraController, LocationLis
     override fun isFrontFacing(): Boolean = currentLensFacing == CameraSelector.LENS_FACING_FRONT
     override fun isWideAngleActive(): Boolean = isWideAngle
     override fun isFlashlightActive(): Boolean = isFlashlightOn
+
+    override fun setExposureCompensation(index: Int): Int {
+        val cam = activeCamera
+        var finalIndex = index
+        if (cam != null) {
+            val exposureState = cam.cameraInfo.exposureState
+            val range = exposureState.exposureCompensationRange
+            finalIndex = index.coerceIn(range.lower, range.upper)
+            try {
+                cam.cameraControl.setExposureCompensationIndex(finalIndex)
+                Log.i(TAG, "Set exposure compensation index: $finalIndex")
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to set exposure compensation index: $finalIndex", e)
+            }
+        }
+        currentExposureIndex.set(finalIndex)
+        getSharedPreferences("CameraLivePrefs", Context.MODE_PRIVATE)
+            .edit()
+            .putInt("KEY_EXPOSURE_INDEX", finalIndex)
+            .apply()
+        return finalIndex
+    }
+
+    override fun getExposureCompensation(): Int = currentExposureIndex.get()
+
+    override fun getExposureRange(): Pair<Int, Int> {
+        val cam = activeCamera
+        val range = cam?.cameraInfo?.exposureState?.exposureCompensationRange
+        return if (range != null) Pair(range.lower, range.upper) else Pair(-6, 6)
+    }
+
+    override fun getExposureStep(): Float {
+        val cam = activeCamera
+        val step = cam?.cameraInfo?.exposureState?.exposureCompensationStep
+        return if (step != null && step.denominator != 0) step.numerator.toFloat() / step.denominator.toFloat() else 0.333f
+    }
 
     private val isMegafonActive = AtomicBoolean(false)
     private var previousVolume: Int = -1
