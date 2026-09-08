@@ -197,12 +197,44 @@ class MjpegServer(port: Int, private val controller: CameraController) : NanoHTT
                             .settings label { display: flex; justify-content: space-between; align-items: center; margin-bottom: 7px; }
                             .settings input[type=range] { width: 110px; vertical-align: middle; }
                             .settings select { background: #222; color: #fff; border: 1px solid rgba(255,255,255,0.3); border-radius: 4px; padding: 3px 6px; font-size: 11px; }
-                            .settings span { display: inline-block; width: 30px; text-align: right; font-weight: bold; }
-                            .preset-group { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; margin-bottom: 10px; }
-                            .btn-preset { padding: 6px 4px; font-size: 11px; border: 1px solid rgba(255,255,255,0.2); border-radius: 6px; background: rgba(255,255,255,0.08); color: white; cursor: pointer; text-align: center; transition: all 0.2s; font-weight: normal; }
-                            .btn-preset:hover { background: rgba(255,255,255,0.22); transform: translateY(-1px); }
-                            .btn-preset.active { background: #0d6efd; border-color: #0d6efd; font-weight: bold; box-shadow: 0 0 8px rgba(13,110,253,0.6); }
-                            .fps-warning { color: #ffc107; font-size: 11px; margin-top: 4px; margin-bottom: 6px; line-height: 1.3; font-weight: bold; background: rgba(255, 193, 7, 0.15); padding: 5px 8px; border-radius: 6px; border: 1px solid rgba(255, 193, 7, 0.4); }
+                            @keyframes megaPulse { 0%,100% { transform: scale(1); } 50% { transform: scale(1.07); } }
+                            .btn-settings { background: rgba(255,255,255,0.12); border: 1px solid rgba(255,255,255,0.2) !important; }
+                            .btn-settings.open { background: rgba(255,255,255,0.22); }
+
+                            /* ── SETTINGS DRAWER (slides up from bottom) ── */
+                            .settings-overlay { position: fixed; inset: 0; z-index: 400; background: rgba(0,0,0,0.5); display: none; }
+                            .settings-overlay.open { display: block; }
+                            .settings-drawer { position: fixed; bottom: 0; left: 0; right: 0; z-index: 500; background: #12121a; border-radius: 18px 18px 0 0; border-top: 1px solid rgba(255,255,255,0.12); max-height: 82vh; display: flex; flex-direction: column; transform: translateY(100%); transition: transform 0.3s cubic-bezier(0.4,0,0.2,1); }
+                            .settings-drawer.open { transform: translateY(0); }
+                            .drawer-handle { width: 40px; height: 4px; background: rgba(255,255,255,0.25); border-radius: 2px; margin: 10px auto 4px; flex-shrink: 0; }
+                            .drawer-title { text-align: center; font-size: 13px; font-weight: bold; color: #aaa; padding: 4px 0 10px; flex-shrink: 0; letter-spacing: 0.5px; text-transform: uppercase; }
+                            .drawer-body { overflow-y: auto; -webkit-overflow-scrolling: touch; padding: 0 16px 20px; }
+                            .drawer-body::-webkit-scrollbar { width: 4px; }
+                            .drawer-body::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.2); border-radius: 2px; }
+
+                            /* ── DRAWER SECTIONS ── */
+                            .section-label { font-size: 10px; font-weight: bold; color: #868e96; text-transform: uppercase; letter-spacing: 0.8px; margin: 14px 0 8px; }
+                            .section-divider { border: none; border-top: 1px solid rgba(255,255,255,0.1); margin: 10px 0; }
+                            .setting-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; font-size: 13px; gap: 10px; }
+                            .setting-row label { display: flex; justify-content: space-between; align-items: center; width: 100%; gap: 8px; }
+                            .setting-row input[type=range] { flex: 1; min-width: 0; accent-color: #4dabf7; }
+                            .setting-row select { background: #1e1e2e; color: #fff; border: 1px solid rgba(255,255,255,0.25); border-radius: 6px; padding: 5px 8px; font-size: 12px; flex: 1; }
+                            .val-badge { font-size: 12px; font-weight: bold; color: #4dabf7; width: 38px; text-align: right; flex-shrink: 0; }
+                            .preset-group { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin-bottom: 12px; }
+                            .btn-preset { padding: 8px 4px; font-size: 11px; border: 1px solid rgba(255,255,255,0.2); border-radius: 8px; background: rgba(255,255,255,0.07); color: white; cursor: pointer; text-align: center; font-weight: normal; }
+                            .btn-preset.active { background: #1971c2; border-color: #1971c2; font-weight: bold; }
+                            .fps-warning { color: #ffd43b; font-size: 11px; margin: -6px 0 8px; padding: 5px 8px; border-radius: 6px; background: rgba(255,212,59,0.12); border: 1px solid rgba(255,212,59,0.35); font-weight: bold; }
+                            .toggle-row { display: flex; align-items: center; justify-content: space-between; font-size: 13px; margin-bottom: 10px; }
+                            .toggle-hint { font-size: 10px; color: #8ce99a; margin-top: -6px; margin-bottom: 8px; }
+                            .vu-row { display: flex; align-items: center; gap: 8px; font-size: 12px; margin-bottom: 6px; }
+                            .vu-bar { flex: 1; height: 8px; background: #1e1e2e; border-radius: 4px; overflow: hidden; border: 1px solid rgba(255,255,255,0.15); }
+                            .vu-fill { width: 0%; height: 100%; background: linear-gradient(90deg, #37b24d 60%, #f59f00 85%, #f03e3e 100%); transition: width 0.05s ease-out; }
+                            .brave-link { color: #ff922b; font-size: 11px; text-decoration: underline; cursor: pointer; display: block; text-align: right; margin-top: 4px; }
+
+                            /* ── MODAL ── */
+                            .modal-card { background: #1e1e28; border: 1px solid #ff922b; border-radius: 16px 16px 0 0; width: 100%; max-width: 560px; padding: 20px; color: #fff; font-size: 13px; line-height: 1.5; max-height: 80vh; overflow-y: auto; }
+                            .modal-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 8px; }
+                            .modal-close { background: none; border: none; color: #aaa; font-size: 22px; cursor: pointer; line-height: 1; padding: 0; }
                         </style>
                     </head>
                     <body>
@@ -210,131 +242,147 @@ class MjpegServer(port: Int, private val controller: CameraController) : NanoHTT
                             <video id="webrtcVideo" autoplay playsinline muted></video>
                             <img id="mainImg" style="display:none;" alt="Back Camera Fallback" />
                         </div>
-                        
+
+                        <!-- PiP Overlays -->
                         <div class="overlay selfie-pip" id="selfiePip" style="display: $selfieDisplay;">
                             <div class="overlay-label">🤳 Selfie</div>
                             <img id="frontImg" alt="Front Camera" />
                         </div>
-                        
                         <div class="overlay map-pip" id="mapPip">
                             <div class="overlay-label">📍 GPS</div>
-                            <button class="btn-pip-close" onclick="toggleMapVisibility(false)" title="Karte schließen / minimieren">✕</button>
+                            <button class="btn-pip-close" onclick="toggleMapVisibility(false)" title="Karte schließen">✕</button>
                             <div id="map"></div>
                         </div>
-                        
-                        <div class="top-bar-left">
+
+                        <!-- Top Status Bar -->
+                        <div class="top-bar">
                             <div class="status-badge" id="badge">
                                 <span class="dot" id="statusDot"></span>
-                                <span id="statusText">Verbinde WebRTC (H.264)...</span>
+                                <span id="statusText">Verbinde...</span>
                             </div>
-                            <div class="viewer-badge" id="viewerBadge" title="Aktive Zuschauer auf diesem Stream">
-                                <span id="viewerIcon">👥</span> <span id="viewerText">1 Zuschauer (Du)</span>
+                            <div class="viewer-badge" id="viewerBadge">
+                                <span>👥</span><span id="viewerText">1</span>
                             </div>
-                        </div>
-                        
-                        <div class="settings">
-                            <div style="font-weight: bold; margin-bottom: 6px; color: #aaa; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px;">⚡ Streaming-Presets</div>
-                            <div class="preset-group">
-                                <button class="btn-preset" onclick="applyPreset('eco')" title="640x480, 15 FPS, 1.2 Mbps">🔋 Eco</button>
-                                <button class="btn-preset active" onclick="applyPreset('balanced')" title="720p HD, 20 FPS, 2.5 Mbps">⚖️ Standard</button>
-                                <button class="btn-preset" onclick="applyPreset('smooth')" title="720p HD, 30 FPS, 4.5 Mbps">🚀 Smooth</button>
-                                <button class="btn-preset" onclick="applyPreset('ultra')" title="1080p FHD, 60 FPS, 8.0 Mbps">🔥 Ultra 60</button>
-                            </div>
-                            <label>Auflösung:
-                                <select id="resSelect" onchange="onResChange(this.value)">
-                                    <option value="480p" ${if (currentRes == "480p") "selected" else ""}>480p (VGA)</option>
-                                    <option value="720p" ${if (currentRes == "720p") "selected" else ""}>720p (HD)</option>
-                                    <option value="1080p" ${if (currentRes == "1080p") "selected" else ""}>1080p (Full HD)</option>
-                                </select>
-                            </label>
-                            <label>FPS: <input type="range" id="fps" min="5" max="60" step="1" value="$currentFps"> <span id="fVal">$currentFps</span></label>
-                            <div id="fpsWarning" class="fps-warning" style="display: ${if (currentFps > 20) "block" else "none"};">⚠️ Über 20 FPS steigt der Akkuverbrauch &amp; Hitze an!</div>
-                            <label>Stream-Qualität: <input type="range" id="quality" min="10" max="95" step="5" value="$currentQuality"> <span id="qVal">$currentQuality</span></label>
-                            <div style="border-top: 1px solid rgba(255,255,255,0.15); margin: 8px 0;"></div>
-                            <div style="font-weight: bold; margin-bottom: 6px; color: #aaa; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px;">📸 Foto-Einstellungen</div>
-                            <label>Foto-Qualität: <input type="range" id="photoQuality" min="50" max="100" step="5" value="$currentPhotoQuality"> <span id="pqVal">$currentPhotoQuality</span></label>
-                            <label style="display: flex; align-items: center; justify-content: space-between; margin-top: 6px; font-size: 11px; cursor: pointer;">
-                                <span>⚡ Schnell-Foto (ohne Pause):</span>
-                                <input type="checkbox" id="fastPhotoCheck" ${if (isFastPhoto) "checked" else ""} onchange="onFastPhotoToggle(this.checked)" style="width: 16px; height: 16px; cursor: pointer;">
-                            </label>
-                            <div id="sensorInfo" style="font-size: 10px; color: #4dabf7; margin-top: 4px; text-align: right;" title="Wird bei normalem Foto für maximale Auflösung genutzt">🔍 $bestSensorLabel</div>
-                            <div style="border-top: 1px solid rgba(255,255,255,0.15); margin: 8px 0;"></div>
-                            <div style="font-weight: bold; margin-bottom: 6px; color: #aaa; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px;">🔊 Audio &amp; Lautstärke</div>
-                            <label>🎤 Mikrofon: <input type="range" id="volSlider" min="0" max="300" step="10" value="100" oninput="onVolumeChange(this.value)"> <span id="volVal" style="color: #4dabf7; width: 42px;">100%</span></label>
-                            <label style="margin-top: 4px;">📢 Megafon: <input type="range" id="megafonVolSlider" min="0" max="100" step="5" value="100" oninput="onMegafonVolumeChange(this.value)"> <span id="megafonVolVal" style="color: #ff6b6b; width: 42px;">100%</span></label>
-                            <label style="display: flex; align-items: center; justify-content: space-between; margin-top: 6px; font-size: 11px; cursor: pointer;">
-                                <span>🛡️ Anti-Clipping (Limiter):</span>
-                                <input type="checkbox" id="limiterCheck" checked onchange="toggleLimiter(this.checked)" style="width: 15px; height: 15px; cursor: pointer;">
-                            </label>
-                            <div style="font-size: 10px; color: #8ce99a; margin-top: 2px;">Dämpft Rückkopplungen &amp; schützt Ohren</div>
-                            <div style="display: flex; align-items: center; gap: 8px; margin-top: 5px; font-size: 11px;">
-                                <span>🎤 Pegel:</span>
-                                <div style="flex: 1; height: 8px; background: #222; border-radius: 4px; overflow: hidden; border: 1px solid rgba(255,255,255,0.2);">
-                                    <div id="vuMeter" style="width: 0%; height: 100%; background: linear-gradient(90deg, #28a745 60%, #ffc107 85%, #dc3545 100%); transition: width 0.05s ease-out;"></div>
-                                </div>
-                            </div>
-                            <div style="margin-top: 6px; text-align: right;">
-                                <a href="javascript:void(0)" onclick="showBraveHelpModal()" style="color: #ff922b; font-size: 10px; text-decoration: underline;">🦁 Brave / Chrome Mikrofon-Hilfe</a>
-                            </div>
-                            <div style="border-top: 1px solid rgba(255,255,255,0.15); margin: 8px 0;"></div>
-                            <div style="font-weight: bold; margin-bottom: 6px; color: #aaa; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px;">📍 GPS &amp; Standort</div>
-                            <label>GPS-Intervall:
-                                <select id="gpsSelect" onchange="onGpsIntervalChange(this.value)">
-                                    <option value="0" ${if (currentGpsInterval == 0) "selected" else ""}>Aus (Stationär - spart Akku)</option>
-                                    <option value="900" ${if (currentGpsInterval == 900) "selected" else ""}>Alle 15 Min</option>
-                                    <option value="300" ${if (currentGpsInterval == 300) "selected" else ""}>Alle 5 Min (Standard)</option>
-                                    <option value="60" ${if (currentGpsInterval == 60) "selected" else ""}>Jede Minute</option>
-                                    <option value="10" ${if (currentGpsInterval == 10) "selected" else ""}>Alle 10 Sek (Live)</option>
-                                </select>
-                            </label>
-                        </div>
-                        
-                        <div class="controls">
-                            <button class="btn-photo" id="photoBtn" onclick="takePhoto()" title="Foto in voller Qualität aufnehmen und herunterladen">📸 Foto</button>
-                            <button class="$flashClass" id="flashBtn" onclick="toggleFlash()" title="Taschenlampe an/aus">💡</button>
-                            <button class="$wideClass" id="wideBtn" onclick="toggleWideAngle()" title="Weitwinkel (0.5x / Ultra-Wide)">$wideText</button>
-                            <button class="btn-switch" id="switchBtn" onclick="switchCamera()" title="Kamera wechseln (Hauptkamera / Frontkamera)">$switchCamText</button>
-                            <button class="btn-rotate" onclick="rotateStream()" title="Bild um 90° nach links drehen">⟲ 90°</button>
-                            <button class="$selfieBtnClass" id="selfieBtn" onclick="toggleSelfie()" title="Selfie-Kamera PiP an/aus">$selfieBtnText</button>
-                            <button class="btn-map active" id="mapBtn" onclick="toggleMapVisibility()" title="GPS-Karte ein-/ausblenden">📍 Karte</button>
-                            <button class="btn-audio muted" id="audioBtn" title="Audio">🔇 Ton an</button>
-                            <button class="btn-megafon" id="megafonBtn" onclick="toggleMegafon()" title="Megafon: Mikrofon an Handy-Lautsprecher">📢 Megafon</button>
                         </div>
 
-                        <div id="braveHelpModal" style="display:none; position:fixed; top:0; left:0; width:100vw; height:100vh; background:rgba(0,0,0,0.85); z-index:9999; justify-content:center; align-items:center; backdrop-filter:blur(8px);">
-                            <div style="background:#1e1e24; border:1px solid #ff922b; border-radius:12px; max-width:500px; width:90%; padding:20px; color:#fff; box-shadow:0 8px 32px rgba(0,0,0,0.8); font-size:13px; line-height:1.5;">
-                                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; border-bottom:1px solid rgba(255,255,255,0.1); padding-bottom:8px;">
-                                    <h3 style="margin:0; font-size:16px; color:#ff922b; display:flex; align-items:center; gap:6px;">🦁 Mikrofon in Brave &amp; Chrome freigeben</h3>
-                                    <button onclick="closeBraveHelpModal()" style="background:none; border:none; color:#aaa; font-size:20px; cursor:pointer; line-height:1;">✕</button>
+                        <!-- Bottom Action Bar (horizontally scrollable) -->
+                        <div class="bottom-bar" id="bottomBar">
+                            <button class="btn-photo" id="photoBtn" onclick="takePhoto()" title="Foto">📸</button>
+                            <button class="btn-audio muted" id="audioBtn" title="Ton">🔇</button>
+                            <button class="btn-megafon" id="megafonBtn" onclick="toggleMegafon()" title="Megafon">📢</button>
+                            <button class="$flashClass" id="flashBtn" onclick="toggleFlash()" title="Taschenlampe">💡</button>
+                            <button class="$wideClass" id="wideBtn" onclick="toggleWideAngle()" title="Weitwinkel">🔍</button>
+                            <button class="btn-switch" id="switchBtn" onclick="switchCamera()" title="Kamera wechseln">🔄</button>
+                            <button class="btn-rotate" onclick="rotateStream()" title="90° drehen">⟲</button>
+                            <button class="$selfieBtnClass" id="selfieBtn" onclick="toggleSelfie()" title="Selfie PiP">🤳</button>
+                            <button class="btn-map active" id="mapBtn" onclick="toggleMapVisibility()" title="GPS-Karte">📍</button>
+                            <button class="btn-settings" id="settingsBtn" onclick="toggleDrawer()" title="Einstellungen">⚙️</button>
+                        </div>
+
+                        <!-- Settings Drawer -->
+                        <div class="settings-overlay" id="settingsOverlay" onclick="closeDrawer()"></div>
+                        <div class="settings-drawer" id="settingsDrawer">
+                            <div class="drawer-handle"></div>
+                            <div class="drawer-title">⚙️ Einstellungen</div>
+                            <div class="drawer-body">
+
+                                <div class="section-label">⚡ Streaming-Presets</div>
+                                <div class="preset-group">
+                                    <button class="btn-preset" onclick="applyPreset('eco')" title="640x480, 15 FPS">🔋 Eco</button>
+                                    <button class="btn-preset active" onclick="applyPreset('balanced')" title="720p, 20 FPS">⚖️ HD</button>
+                                    <button class="btn-preset" onclick="applyPreset('smooth')" title="720p, 30 FPS">🚀 Smooth</button>
+                                    <button class="btn-preset" onclick="applyPreset('ultra')" title="1080p, 60 FPS">🔥 Ultra</button>
                                 </div>
-                                <p style="margin-top:0; color:#ddd; font-size:12px;">Browser blockieren Mikrofon-Zugriff auf lokalen IP-Adressen (HTTP) aus Sicherheitsgründen. So aktivierst du Megafon in 3 Klicks:</p>
-                                <ol style="padding-left:20px; margin-bottom:15px; color:#f1f3f5; font-size:12px;">
-                                    <li style="margin-bottom:8px;">
-                                        Öffne einen neuen Tab mit der Flag-Seite:<br>
-                                        <div style="display:flex; gap:6px; margin-top:4px;">
-                                            <input type="text" id="flagUrlInput" readonly value="brave://flags/#unsafely-treat-insecure-origin-as-secure" style="background:#111; color:#ff922b; border:1px solid #444; border-radius:4px; padding:4px 8px; font-size:11px; flex:1;">
-                                            <button onclick="copyToClipboard('flagUrlInput')" style="background:#ff922b; color:#000; border:none; border-radius:4px; padding:4px 8px; font-size:11px; font-weight:bold; cursor:pointer;">📋 Kopieren</button>
+                                <div class="setting-row">
+                                    <label>Auflösung:
+                                        <select id="resSelect" onchange="onResChange(this.value)">
+                                            <option value="480p" ${if (currentRes == "480p") "selected" else ""}>480p (VGA)</option>
+                                            <option value="720p" ${if (currentRes == "720p") "selected" else ""}>720p (HD)</option>
+                                            <option value="1080p" ${if (currentRes == "1080p") "selected" else ""}>1080p (FHD)</option>
+                                        </select>
+                                    </label>
+                                </div>
+                                <div class="setting-row">
+                                    <label>FPS: <input type="range" id="fps" min="5" max="60" step="1" value="$currentFps"> <span class="val-badge" id="fVal">$currentFps</span></label>
+                                </div>
+                                <div id="fpsWarning" class="fps-warning" style="display: ${if (currentFps > 20) "block" else "none"};">⚠️ Über 20 FPS = mehr Hitze &amp; Akku!</div>
+                                <div class="setting-row">
+                                    <label>Stream-Qualität: <input type="range" id="quality" min="10" max="95" step="5" value="$currentQuality"> <span class="val-badge" id="qVal">$currentQuality</span></label>
+                                </div>
+
+                                <hr class="section-divider">
+                                <div class="section-label">📸 Foto-Einstellungen</div>
+                                <div class="setting-row">
+                                    <label>Foto-Qualität: <input type="range" id="photoQuality" min="50" max="100" step="5" value="$currentPhotoQuality"> <span class="val-badge" id="pqVal">$currentPhotoQuality</span></label>
+                                </div>
+                                <div class="toggle-row">
+                                    <span>⚡ Schnell-Foto (ohne Pause):</span>
+                                    <input type="checkbox" id="fastPhotoCheck" ${if (isFastPhoto) "checked" else ""} onchange="onFastPhotoToggle(this.checked)" style="width:18px;height:18px;cursor:pointer;">
+                                </div>
+                                <div style="font-size:10px;color:#4dabf7;text-align:right;margin-top:-4px;margin-bottom:8px;">🔍 $bestSensorLabel</div>
+
+                                <hr class="section-divider">
+                                <div class="section-label">🔊 Audio &amp; Lautstärke</div>
+                                <div class="setting-row">
+                                    <label>🎤 Mikrofon (Eingang): <input type="range" id="volSlider" min="0" max="300" step="10" value="200" oninput="onVolumeChange(this.value)"> <span class="val-badge" id="volVal" style="color:#4dabf7;">200%</span></label>
+                                </div>
+                                <div class="setting-row">
+                                    <label>📢 Megafon (Lautsprecher): <input type="range" id="megafonVolSlider" min="0" max="100" step="5" value="100" oninput="onMegafonVolumeChange(this.value)"> <span class="val-badge" id="megafonVolVal" style="color:#ff6b6b;">100%</span></label>
+                                </div>
+                                <div class="toggle-row">
+                                    <span>🛡️ Anti-Clipping (Limiter):</span>
+                                    <input type="checkbox" id="limiterCheck" checked onchange="toggleLimiter(this.checked)" style="width:18px;height:18px;cursor:pointer;">
+                                </div>
+                                <div class="toggle-hint">Dämpft Rückkopplungen &amp; schützt Ohren</div>
+                                <div class="vu-row">
+                                    <span>🎤 Pegel:</span>
+                                    <div class="vu-bar"><div class="vu-fill" id="vuMeter"></div></div>
+                                </div>
+                                <a class="brave-link" onclick="showBraveHelpModal()">🦁 Brave / Chrome Mikrofon-Hilfe</a>
+
+                                <hr class="section-divider">
+                                <div class="section-label">📍 GPS &amp; Standort</div>
+                                <div class="setting-row">
+                                    <label>GPS-Intervall:
+                                        <select id="gpsSelect" onchange="onGpsIntervalChange(this.value)">
+                                            <option value="0" ${if (currentGpsInterval == 0) "selected" else ""}>Aus (Stationär)</option>
+                                            <option value="900" ${if (currentGpsInterval == 900) "selected" else ""}>Alle 15 Min</option>
+                                            <option value="300" ${if (currentGpsInterval == 300) "selected" else ""}>Alle 5 Min</option>
+                                            <option value="60" ${if (currentGpsInterval == 60) "selected" else ""}>Jede Minute</option>
+                                            <option value="10" ${if (currentGpsInterval == 10) "selected" else ""}>Alle 10 Sek (Live)</option>
+                                        </select>
+                                    </label>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Brave Help Modal -->
+                        <div id="braveHelpModal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.88); z-index:9999; justify-content:center; align-items:flex-end; backdrop-filter:blur(8px);">
+                            <div class="modal-card">
+                                <div class="modal-header">
+                                    <h3 style="margin:0;font-size:15px;color:#ff922b;">🦁 Mikrofon in Brave &amp; Chrome freigeben</h3>
+                                    <button class="modal-close" onclick="closeBraveHelpModal()">✕</button>
+                                </div>
+                                <p style="color:#ddd;font-size:12px;margin-top:0;">Browser blockieren Mikrofon-Zugriff auf lokalen IP-Adressen (HTTP). So aktivierst du Megafon:</p>
+                                <ol style="padding-left:18px;margin-bottom:14px;color:#f1f3f5;font-size:12px;">
+                                    <li style="margin-bottom:8px;">Öffne einen neuen Tab:<br>
+                                        <div style="display:flex;gap:6px;margin-top:4px;">
+                                            <input type="text" id="flagUrlInput" readonly value="brave://flags/#unsafely-treat-insecure-origin-as-secure" style="background:#111;color:#ff922b;border:1px solid #444;border-radius:4px;padding:4px 8px;font-size:11px;flex:1;min-width:0;">
+                                            <button onclick="copyToClipboard('flagUrlInput')" style="background:#ff922b;color:#000;border:none;border-radius:4px;padding:4px 10px;font-size:11px;font-weight:bold;cursor:pointer;flex-shrink:0;">📋</button>
                                         </div>
-                                        <span style="font-size:10px; color:#aaa;">(In Chrome: <code>chrome://flags/#unsafely-treat-insecure-origin-as-secure</code>)</span>
+                                        <span style="font-size:10px;color:#aaa;">(Chrome: <code>chrome://flags/...</code>)</span>
                                     </li>
-                                    <li style="margin-bottom:8px;">
-                                        Trage diese exakte URL in das Flag-Eingabefeld ein:<br>
-                                        <div style="display:flex; gap:6px; margin-top:4px;">
-                                            <input type="text" id="streamUrlInput" readonly value="" style="background:#111; color:#51cf66; border:1px solid #444; border-radius:4px; padding:4px 8px; font-size:11px; flex:1;">
-                                            <button onclick="copyToClipboard('streamUrlInput')" style="background:#51cf66; color:#000; border:none; border-radius:4px; padding:4px 8px; font-size:11px; font-weight:bold; cursor:pointer;">📋 Kopieren</button>
+                                    <li style="margin-bottom:8px;">Trage diese URL ein:<br>
+                                        <div style="display:flex;gap:6px;margin-top:4px;">
+                                            <input type="text" id="streamUrlInput" readonly value="" style="background:#111;color:#51cf66;border:1px solid #444;border-radius:4px;padding:4px 8px;font-size:11px;flex:1;min-width:0;">
+                                            <button onclick="copyToClipboard('streamUrlInput')" style="background:#51cf66;color:#000;border:none;border-radius:4px;padding:4px 10px;font-size:11px;font-weight:bold;cursor:pointer;flex-shrink:0;">📋</button>
                                         </div>
                                     </li>
-                                    <li style="margin-bottom:8px;">
-                                        Stelle das Dropdown rechts daneben auf <b>"Enabled"</b>.
-                                    </li>
-                                    <li style="margin-bottom:8px;">
-                                        Klicke unten rechts auf den blauen <b>"Relaunch"</b> Button.
-                                    </li>
+                                    <li style="margin-bottom:8px;">Dropdown auf <b>"Enabled"</b> stellen.</li>
+                                    <li>Auf <b>"Relaunch"</b> klicken.</li>
                                 </ol>
-                                <div style="background:rgba(255, 146, 43, 0.15); border:1px solid rgba(255, 146, 43, 0.4); border-radius:6px; padding:8px 10px; font-size:11px; color:#ffc078; margin-bottom:15px;">
-                                    🛡️ <b>Brave Shields Tipp:</b> Falls Brave weiterhin blockiert, klicke links in der URL-Leiste auf das Löwen-Symbol und erlaube "Mikrofon" bzw. schalte "Shields" für diesen lokalen Stream aus.
-                                </div>
-                                <button onclick="closeBraveHelpModal()" style="width:100%; background:#339af0; color:#fff; border:none; border-radius:6px; padding:8px; font-weight:bold; cursor:pointer;">Schließen</button>
+                                <div style="background:rgba(255,146,43,0.15);border:1px solid rgba(255,146,43,0.4);border-radius:6px;padding:8px 10px;font-size:11px;color:#ffc078;margin-bottom:14px;">🛡️ <b>Brave Shields:</b> Klicke auf das Löwen-Symbol → Mikrofon erlauben.</div>
+                                <button onclick="closeBraveHelpModal()" style="width:100%;background:#339af0;color:#fff;border:none;border-radius:8px;padding:10px;font-weight:bold;cursor:pointer;font-size:14px;">Schließen</button>
                             </div>
                         </div>
 
@@ -354,7 +402,7 @@ class MjpegServer(port: Int, private val controller: CameraController) : NanoHTT
                             let selfieActive = ${if (isSelfieOn) "true" else "false"};
                             let currentRotation = 0;
                             let isAudioEnabled = false;
-                            let userVolume = 1.0;
+                            let userVolume = 2.0;
                             let megafonVolume = 100;
                             let audioCtx = null;
                             let audioGainNode = null;
@@ -362,6 +410,30 @@ class MjpegServer(port: Int, private val controller: CameraController) : NanoHTT
                             let audioSourceNode = null;
                             let vuAnimationId = null;
                             let pcmAbortController = null;
+
+                            function toggleDrawer() {
+                                const drawer = document.getElementById('settingsDrawer');
+                                const overlay = document.getElementById('settingsOverlay');
+                                const btn = document.getElementById('settingsBtn');
+                                if (!drawer) return;
+                                const isOpen = drawer.classList.contains('open');
+                                if (isOpen) {
+                                    closeDrawer();
+                                } else {
+                                    drawer.classList.add('open');
+                                    if (overlay) overlay.classList.add('open');
+                                    if (btn) btn.classList.add('open');
+                                }
+                            }
+
+                            function closeDrawer() {
+                                const drawer = document.getElementById('settingsDrawer');
+                                const overlay = document.getElementById('settingsOverlay');
+                                const btn = document.getElementById('settingsBtn');
+                                if (drawer) drawer.classList.remove('open');
+                                if (overlay) overlay.classList.remove('open');
+                                if (btn) btn.classList.remove('open');
+                            }
 
                             let isLimiterEnabled = true;
                             let audioWaveShaper = null;
