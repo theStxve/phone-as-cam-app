@@ -141,7 +141,7 @@ class WebRtcManager(private val context: Context) {
     }
 
     /**
-     * Munge SDP to force H.264 Constrained Baseline profile.
+     * Munge SDP to force H.264 Constrained Baseline profile with zero-latency parameters.
      * Replaces any profile-level-id starting with "64" (High) or "4d" (Main)
      * with "42e01f" (Constrained Baseline Level 3.1) to prevent CABAC and B-frame latency.
      */
@@ -150,9 +150,9 @@ class WebRtcManager(private val context: Context) {
             val plid = match.value.substringAfter("=")
             if (plid.startsWith("64", ignoreCase = true) || plid.startsWith("4d", ignoreCase = true)) {
                 Log.d(TAG, "SDP munge: $plid → 42e01f")
-                "profile-level-id=42e01f"
+                "profile-level-id=42e01f;packetization-mode=1;level-asymmetry-allowed=1"
             } else {
-                match.value
+                "${match.value};packetization-mode=1;level-asymmetry-allowed=1"
             }
         }
     }

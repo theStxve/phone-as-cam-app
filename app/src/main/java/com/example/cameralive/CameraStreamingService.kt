@@ -318,17 +318,32 @@ class CameraStreamingService : LifecycleService(), CameraController, LocationLis
             androidx.camera.camera2.interop.Camera2Interop.Extender(backBuilder).apply {
                 setCaptureRequestOption(
                     android.hardware.camera2.CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE,
-                    android.util.Range(10, targetFps.coerceAtLeast(15))
+                    android.util.Range(targetFps.coerceAtLeast(15), targetFps)
                 )
+                // Optimize camera sensor pipeline for minimal frame-latency
+                setCaptureRequestOption(
+                    android.hardware.camera2.CaptureRequest.CONTROL_AE_MODE,
+                    android.hardware.camera2.CaptureRequest.CONTROL_AE_MODE_ON
+                )
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    setCaptureRequestOption(
+                        android.hardware.camera2.CaptureRequest.CONTROL_ENABLE_ZSL,
+                        true
+                    )
+                }
             }
 
             val primaryAnalyzer = backBuilder.build().also {
                 it.setAnalyzer(cameraExecutor) { imageProxy ->
                     val now = System.currentTimeMillis()
-                    val minInterval = 1000L / maxFps.get()
-                    if (now - lastBackFrameTime < minInterval - 4) {
-                        imageProxy.close()
-                        return@setAnalyzer
+                    // When WebRTC peer is active, pass every frame immediately (WebRTC handles hardware rate limiting)
+                    // If no WebRTC peer, throttle to maxFps for JPEG snapshots
+                    if (webRtcManager?.hasActivePeer() != true) {
+                        val minInterval = 1000L / maxFps.get()
+                        if (now - lastBackFrameTime < minInterval - 4) {
+                            imageProxy.close()
+                            return@setAnalyzer
+                        }
                     }
                     lastBackFrameTime = now
                     processImage(imageProxy, isFront = false)

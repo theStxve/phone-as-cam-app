@@ -598,23 +598,23 @@ class MjpegServer(port: Int, private val controller: CameraController) : NanoHTT
                                         } catch (e) {}
                                     }, 1500);
 
-                                    // Auto catch-up: Keep video playback tightly locked to live edge (< 80ms)
+                                    // Ultra-fast auto catch-up: Keep video playback tightly locked to live edge (< 35ms)
                                     setInterval(() => {
-                                        if (!videoEl || !webrtcConnected) return;
-                                        try {
-                                            if (videoEl.buffered && videoEl.buffered.length > 0) {
-                                                const liveEnd = videoEl.buffered.end(videoEl.buffered.length - 1);
-                                                const lag = liveEnd - videoEl.currentTime;
-                                                if (lag > 0.25) {
-                                                    videoEl.currentTime = liveEnd - 0.02;
-                                                } else if (lag > 0.08) {
-                                                    videoEl.playbackRate = 1.08;
-                                                } else {
-                                                    videoEl.playbackRate = 1.0;
-                                                }
-                                            }
-                                        } catch (e) {}
-                                    }, 200);
+                                         if (!videoEl || !webrtcConnected) return;
+                                         try {
+                                             if (videoEl.buffered && videoEl.buffered.length > 0) {
+                                                 const liveEnd = videoEl.buffered.end(videoEl.buffered.length - 1);
+                                                 const lag = liveEnd - videoEl.currentTime;
+                                                 if (lag > 0.12) {
+                                                     videoEl.currentTime = liveEnd - 0.01;
+                                                 } else if (lag > 0.03) {
+                                                     videoEl.playbackRate = 1.06;
+                                                 } else {
+                                                     videoEl.playbackRate = 1.0;
+                                                 }
+                                             }
+                                         } catch (e) {}
+                                     }, 40);
 
                                     // Create Offer
                                     const offer = await pc.createOffer();
