@@ -409,7 +409,13 @@ object P2pSignalingManager {
                     val sdpMLineIndex = candObj.optInt("sdpMLineIndex", 0)
 
                     if (candSdp.isNotBlank()) {
-                        service?.webRtcManager?.addRemoteCandidate(sdpMid, sdpMLineIndex, candSdp, peerId = src)
+                        // Same single-thread executor as handleRemoteOffer: the viewer's candidates
+                        // arrive right after its OFFER, before the session exists. Run directly,
+                        // they were dropped ("No session found"), so the camera never learned the
+                        // viewer's public address and connections outside the LAN failed.
+                        executor.submit {
+                            service?.webRtcManager?.addRemoteCandidate(sdpMid, sdpMLineIndex, candSdp, peerId = src)
+                        }
                     }
                 }
                 "ID-TAKEN" -> {

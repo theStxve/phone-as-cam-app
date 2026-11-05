@@ -275,7 +275,7 @@
         }
         function handleSecuritySubmit(e) {
             e.preventDefault();
-            const rId = gateRoomIdInput.value.trim();
+            const rId = gateRoomIdInput.value.trim().toLowerCase();
             const pin = gatePinInput.value.trim();
             if (!rId) { showSecurityGate('Kamera-ID fehlt'); return; }
             if (!pin) { showSecurityGate('PIN fehlt'); return; }
@@ -351,7 +351,7 @@
             ws.onopen = () => {
                 updateStatus('Rufe ' + targetRoomId, '');
                 initWebRtc();
-                pingTimer = setInterval(() => { if (ws && ws.readyState === WebSocket.OPEN) { try { ws.send(JSON.stringify({ type: 'PING' })); } catch(e){} } }, 15000);
+                pingTimer = setInterval(() => { if (ws && ws.readyState === WebSocket.OPEN) { try { ws.send(JSON.stringify({ type: 'HEARTBEAT' })); } catch(e){} } }, 15000);
             };
             ws.onmessage = async (event) => {
                 try {
