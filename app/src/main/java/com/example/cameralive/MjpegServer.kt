@@ -60,7 +60,8 @@ class MjpegServer(port: Int, private val controller: CameraController) : NanoHTT
     fun updateViewerCount(): Int {
         val now = System.currentTimeMillis()
         activeSessions.entries.removeIf { now - it.value > 6000L }
-        val count = activeSessions.size
+        // Browser tabs on the web UI plus viewers connected through the remote (P2P) viewer.
+        val count = activeSessions.size + (service?.webRtcManager?.getRemotePeerCount() ?: 0)
         CameraStreamingService.activeViewers.value = count
         return count
     }

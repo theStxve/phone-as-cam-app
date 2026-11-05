@@ -33,7 +33,9 @@ class WebRtcManager(private val context: Context) {
         var dataChannel: DataChannel? = null,
         var onLocalCandidateGathered: ((IceCandidate) -> Unit)? = null,
         val isConnected: AtomicBoolean = AtomicBoolean(false),
-        val createdAt: Long = System.currentTimeMillis()
+        val createdAt: Long = System.currentTimeMillis(),
+        /** Came in over the P2P relay. Local tabs are already counted by their web heartbeat. */
+        val isRemote: Boolean = false
     )
 
     private var eglBase: EglBase? = null
@@ -56,6 +58,7 @@ class WebRtcManager(private val context: Context) {
 
     fun hasActivePeer(): Boolean = sessions.values.any { it.isConnected.get() }
     fun getActivePeerCount(): Int = sessions.values.count { it.isConnected.get() }
+    fun getRemotePeerCount(): Int = sessions.values.count { it.isRemote && it.isConnected.get() }
 
     val gatheredCandidates: List<IceCandidate>
         get() = sessions.values.firstOrNull()?.gatheredCandidates ?: emptyList()
@@ -329,17 +332,13 @@ class WebRtcManager(private val context: Context) {
                     PeerConnection.IceConnectionState.CONNECTED,
                     PeerConnection.IceConnectionState.COMPLETED -> {
                         session.isConnected.set(true)
-                        (context as? CameraStreamingService)?.let {
-                            CameraStreamingService.activeViewers.value = getActivePeerCount()
-                        }
+                        (context as? CameraStreamingService)?.refreshViewerCount()
                     }
                     PeerConnection.IceConnectionState.DISCONNECTED,
                     PeerConnection.IceConnectionState.FAILED,
                     PeerConnection.IceConnectionState.CLOSED -> {
                         session.isConnected.set(false)
-                        (context as? CameraStreamingService)?.let {
-                            CameraStreamingService.activeViewers.value = getActivePeerCount()
-                        }
+                        (context as? CameraStreamingService)?.refreshViewerCount()
                     }
                     else -> {}
                 }
@@ -394,7 +393,8 @@ class WebRtcManager(private val context: Context) {
         session = PeerSession(
             peerId = peerId,
             peerConnection = pc,
-            onLocalCandidateGathered = onLocalCandidate
+            onLocalCandidateGathered = onLocalCandidate,
+            isRemote = clientIp == null
         )
         sessions[peerId] = session
 
@@ -709,9 +709,7 @@ class WebRtcManager(private val context: Context) {
         }
         // The mic may have been on only for this viewer.
         applyAudioState()
-        (context as? CameraStreamingService)?.let {
-            CameraStreamingService.activeViewers.value = getActivePeerCount()
-        }
+        (context as? CameraStreamingService)?.refreshViewerCount()
         Log.i(TAG, "Disposed session for peer ${session.peerId}. Active peers: ${getActivePeerCount()}")
     }
 

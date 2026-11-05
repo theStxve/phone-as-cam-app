@@ -1085,6 +1085,11 @@ class CameraStreamingService : LifecycleService(), CameraController, LocationLis
         }
     }
 
+    /** One count for the app and the web UI. Also refreshed every 2 s by [evaluatePower]. */
+    fun refreshViewerCount() {
+        activeViewers.value = mjpegServer?.updateViewerCount() ?: (webRtcManager?.getRemotePeerCount() ?: 0)
+    }
+
     /** Runs every 2 seconds on the main thread and whenever a client shows up. */
     private fun evaluatePower() {
         if (runningInstance !== this) return
