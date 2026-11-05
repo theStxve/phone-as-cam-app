@@ -19,7 +19,7 @@ interface CameraController {
     fun isFrontFacing(): Boolean
     fun isWideAngleActive(): Boolean
     fun isFlashlightActive(): Boolean
-    fun setRemoteAudioEnabled(enabled: Boolean)
+    fun setRemoteAudioEnabled(enabled: Boolean, peerId: String? = null)
     fun setExposureCompensation(index: Int): Int
     fun getExposureCompensation(): Int
     fun getExposureRange(): Pair<Int, Int>
@@ -196,6 +196,16 @@ class MjpegServer(port: Int, private val controller: CameraController) : NanoHTT
         }
     }
 
+    /**
+     * Each browser tab sends its own ID. Keyed by IP, two tabs or two devices behind the same
+     * address (router, VPN, port forward) replaced each other's stream in an endless loop.
+     */
+    private fun webRtcPeerId(session: IHTTPSession): String {
+        val id = session.headers["x-peer-id"]?.trim().orEmpty()
+        if (id.length in 4..64 && id.all { it.isLetterOrDigit() || it == '-' || it == '_' }) return "lan-$id"
+        return session.remoteIpAddress ?: "lan-viewer"
+    }
+
     override fun serve(session: IHTTPSession): Response {
         if (session.method == Method.OPTIONS) {
             val res = newFixedLengthResponse(Response.Status.OK, "text/plain", "OK")
@@ -257,7 +267,7 @@ class MjpegServer(port: Int, private val controller: CameraController) : NanoHTT
                         val buffer = readBody(session, MAX_SIGNALING_BODY)
                             ?: return newFixedLengthResponse(Response.Status.BAD_REQUEST, "text/plain", "Invalid offer")
                         val offerJsonStr = String(buffer, Charsets.UTF_8)
-                        val peerId = session.remoteIpAddress ?: "lan-viewer"
+                        val peerId = webRtcPeerId(session)
                         val answerJson = service?.webRtcManager?.handleOffer(offerJsonStr, peerId = peerId, clientIp = session.remoteIpAddress)
                         if (answerJson != null) {
                             val res = newFixedLengthResponse(Response.Status.OK, "application/json", answerJson)
@@ -279,7 +289,7 @@ class MjpegServer(port: Int, private val controller: CameraController) : NanoHTT
                         val candidateSdp = candidateJson.getString("candidate")
                         val sdpMid = candidateJson.optString("sdpMid", "0")
                         val sdpMLineIndex = candidateJson.optInt("sdpMLineIndex", 0)
-                        val peerId = session.remoteIpAddress ?: "lan-viewer"
+                        val peerId = webRtcPeerId(session)
                         service?.webRtcManager?.addRemoteCandidate(sdpMid, sdpMLineIndex, candidateSdp, peerId = peerId, clientIp = session.remoteIpAddress)
                         return newFixedLengthResponse(Response.Status.OK, "text/plain", "OK")
                     } catch (e: Exception) {
@@ -289,7 +299,7 @@ class MjpegServer(port: Int, private val controller: CameraController) : NanoHTT
                 }
             }
             "/webrtc_candidates" -> {
-                val list = service?.webRtcManager?.getGatheredCandidates(session.remoteIpAddress)
+                val list = service?.webRtcManager?.getGatheredCandidates(webRtcPeerId(session))
                 val arr = JSONArray()
                 if (list != null) {
                     synchronized(list) {
@@ -598,7 +608,7 @@ class MjpegServer(port: Int, private val controller: CameraController) : NanoHTT
             "/audio_state" -> {
                 if (session.method == Method.POST) {
                     val enabled = session.parameters["enabled"]?.firstOrNull()?.lowercase() == "true"
-                    controller.setRemoteAudioEnabled(enabled)
+                    controller.setRemoteAudioEnabled(enabled, webRtcPeerId(session))
                     val res = newFixedLengthResponse(Response.Status.OK, "application/json", "{\"audioEnabled\": $enabled}")
                     res.addHeader("Access-Control-Allow-Origin", "*")
                     return res

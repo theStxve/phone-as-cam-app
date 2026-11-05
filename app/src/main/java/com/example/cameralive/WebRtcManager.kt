@@ -24,6 +24,9 @@ class WebRtcManager(private val context: Context) {
         val peerId: String,
         val peerConnection: PeerConnection,
         var videoSender: RtpSender? = null,
+        var audioSender: RtpSender? = null,
+        /** This viewer wants to hear the phone. Others keep their own setting. */
+        @Volatile var wantsAudio: Boolean = false,
         val gatheredCandidates: MutableList<IceCandidate> = Collections.synchronizedList(mutableListOf()),
         val pendingRemoteCandidates: MutableList<IceCandidate> = Collections.synchronizedList(mutableListOf()),
         @Volatile var isRemoteDescriptionSet: Boolean = false,
@@ -373,7 +376,7 @@ class WebRtcManager(private val context: Context) {
                             val data = ByteArray(buffer.data.remaining())
                             buffer.data.get(data)
                             val str = String(data, Charsets.UTF_8)
-                            handleDataChannelMessage(channel, str)
+                            handleDataChannelMessage(channel, str, peerId)
                         } catch (e: Exception) {
                             Log.e(TAG, "[$peerId] Error reading DataChannel message", e)
                         }
@@ -395,16 +398,14 @@ class WebRtcManager(private val context: Context) {
         )
         sessions[peerId] = session
 
-        pc.setAudioRecording(audioOnByDefault)
         pc.setAudioPlayout(talkbackActive)
-        if (audioOnByDefault) {
-            sharedAudioTrack?.setEnabled(true)
-        }
+        session.wantsAudio = audioOnByDefault
 
         val streamIds = listOf("ARDAMS")
         val rtpSender = videoTrack?.let { pc.addTrack(it, streamIds) }
         session.videoSender = rtpSender
-        sharedAudioTrack?.let { pc.addTrack(it, streamIds) }
+        session.audioSender = sharedAudioTrack?.let { pc.addTrack(it, streamIds) }
+        applyAudioState()
 
         val currentFps = (context as? CameraStreamingService)?.maxFps?.get() ?: 20
         val currentQuality = (context as? CameraStreamingService)?.jpegQuality?.get() ?: 20
@@ -556,13 +557,43 @@ class WebRtcManager(private val context: Context) {
         return responseObj.toString()
     }
 
-    /** Starts or stops the phone microphone for all active WebRTC sessions. */
-    fun setAudioEnabled(enabled: Boolean) {
-        sharedAudioTrack?.setEnabled(enabled)
-        sessions.values.forEach { session ->
-            session.peerConnection.setAudioRecording(enabled)
+    // Audio changes requested from WebRTC callbacks run here. Those callbacks come on the signaling
+    // thread, which must never wait for this object's lock: handleOffer holds it while waiting for
+    // that thread, and setTrack/setAudioRecording block on it.
+    private val audioExecutor = java.util.concurrent.Executors.newSingleThreadExecutor()
+
+    /**
+     * Turns the phone audio on or off for one viewer ([peerId]) or, with null, for all of them.
+     * It used to be global: any viewer joining or muting switched the sound off for everyone.
+     */
+    fun setAudioEnabled(enabled: Boolean, peerId: String? = null) {
+        audioExecutor.execute {
+            synchronized(this) {
+                if (peerId != null) {
+                    sessions[peerId]?.wantsAudio = enabled
+                } else {
+                    sessions.values.forEach { it.wantsAudio = enabled }
+                }
+                applyAudioState()
+            }
         }
-        Log.d(TAG, "Microphone for WebRTC enabled=$enabled across ${sessions.size} peer(s)")
+    }
+
+    /** The mic runs while any viewer listens; each viewer only gets audio packets if it asked. */
+    @Synchronized
+    private fun applyAudioState() {
+        val track = sharedAudioTrack ?: return
+        val anyListener = sessions.values.any { it.wantsAudio }
+        track.setEnabled(anyListener)
+        sessions.values.forEach { s ->
+            try {
+                s.peerConnection.setAudioRecording(anyListener)
+                s.audioSender?.setTrack(if (s.wantsAudio) track else null, false)
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to apply audio state for ${s.peerId}", e)
+            }
+        }
+        Log.d(TAG, "WebRTC audio: mic=$anyListener, listeners=${sessions.values.count { it.wantsAudio }}/${sessions.size}")
     }
 
     /** Starts or stops audio output for browser talkback. */
@@ -573,7 +604,7 @@ class WebRtcManager(private val context: Context) {
         }
     }
 
-    private fun handleDataChannelMessage(channel: DataChannel, msgStr: String) {
+    private fun handleDataChannelMessage(channel: DataChannel, msgStr: String, peerId: String) {
         try {
             val json = JSONObject(msgStr)
             val action = json.optString("action")
@@ -603,7 +634,7 @@ class WebRtcManager(private val context: Context) {
                 "stop_siren"        -> AlarmSoundManager.stopSiren()
                 "toggle_siren"      -> if (AlarmSoundManager.isSirenPlaying()) AlarmSoundManager.stopSiren()
                                        else AlarmSoundManager.playSiren(0)
-                "set_audio"         -> setAudioEnabled(json.optBoolean("enabled", false))
+                "set_audio"         -> setAudioEnabled(json.optBoolean("enabled", false), peerId)
                 "set_ai"            -> {
                     AiMotionDetector.isEnabled = json.optBoolean("enabled", AiMotionDetector.isEnabled)
                     svc?.let { AiMotionDetector.save(it) }
@@ -660,6 +691,7 @@ class WebRtcManager(private val context: Context) {
         }
     }
 
+    @Synchronized
     private fun disposeSession(session: PeerSession) {
         session.isConnected.set(false)
         sessions.remove(session.peerId)
@@ -675,6 +707,8 @@ class WebRtcManager(private val context: Context) {
         } catch (e: Exception) {
             Log.w(TAG, "Error disposing peer connection for ${session.peerId}", e)
         }
+        // The mic may have been on only for this viewer.
+        applyAudioState()
         (context as? CameraStreamingService)?.let {
             CameraStreamingService.activeViewers.value = getActivePeerCount()
         }
@@ -694,6 +728,7 @@ class WebRtcManager(private val context: Context) {
     @Synchronized
     fun release() {
         closePeerConnection(null)
+        audioExecutor.shutdownNow()
 
         sharedAudioTrack?.dispose()
         sharedAudioSource?.dispose()

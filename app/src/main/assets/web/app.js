@@ -1083,7 +1083,7 @@ audioBtn.addEventListener('click', async () => {
     }
 
     // Inform the phone so it can stop/start the mic (battery saving)
-    fetch('/audio_state?enabled=' + isAudioEnabled, { method: 'POST' }).catch(() => {});
+    fetch('/audio_state?enabled=' + isAudioEnabled, { method: 'POST', headers: { 'X-Peer-Id': rtcPeerId } }).catch(() => {});
 
     if (isAudioEnabled) {
         setBtn(audioBtn, 'volume-2', 'Ton');
@@ -1221,6 +1221,9 @@ function stopPcmMegafonFallback() {
 
 // --- WebRTC Connection ---
 let rttTimer = null;
+// Identifies this tab to the phone, so viewers sharing one IP address don't replace each other.
+const rtcPeerId = Math.random().toString(36).slice(2, 12) + Date.now().toString(36);
+const rtcHeaders = { 'Content-Type': 'application/json', 'X-Peer-Id': rtcPeerId };
 
 async function startWebRtc() {
     try {
@@ -1251,7 +1254,7 @@ async function startWebRtc() {
                 if (offerSent) {
                     fetch('/webrtc_candidate', {
                         method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
+                        headers: rtcHeaders,
                         body: JSON.stringify(event.candidate)
                     }).catch(() => {});
                 }
@@ -1332,7 +1335,7 @@ async function startWebRtc() {
                 statusText.textContent = 'Live';
                 // The phone keeps its mic off for new connections until told otherwise.
                 if (isAudioEnabled) {
-                    fetch('/audio_state?enabled=true', { method: 'POST' }).catch(() => {});
+                    fetch('/audio_state?enabled=true', { method: 'POST', headers: { 'X-Peer-Id': rtcPeerId } }).catch(() => {});
                 }
                 videoEl.style.display = 'block';
                 mainImg.style.display = 'none';
@@ -1411,7 +1414,7 @@ async function startWebRtc() {
         // Send offer with candidates
         const resp = await fetch('/webrtc_offer', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: rtcHeaders,
             body: JSON.stringify({
                 type: pc.localDescription.type,
                 sdp: pc.localDescription.sdp,
@@ -1466,7 +1469,7 @@ async function pollPhoneCandidates() {
     for (let i = 0; i < 15; i++) {
         await sleep(350);
         try {
-            const res = await fetch('/webrtc_candidates');
+            const res = await fetch('/webrtc_candidates', { headers: { 'X-Peer-Id': rtcPeerId } });
             if (res.ok) {
                 const list = await res.json();
                 if (Array.isArray(list)) {

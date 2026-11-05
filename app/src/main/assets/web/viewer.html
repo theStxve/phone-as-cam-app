@@ -336,18 +336,27 @@
         }
 
         // ---------- P2P Connection ----------
+        // Exactly one pending reconnect. Several stacked timers used to restart each other forever.
+        function scheduleReconnect(delayMs) {
+            if (!isAuthenticated) return;
+            updateStatus('Verbindung wird wiederhergestellt', 'warn');
+            clearTimeout(reconnectTimeout);
+            reconnectTimeout = setTimeout(startP2pConnection, delayMs);
+        }
         function startP2pConnection() {
-            if (reconnectTimeout) clearTimeout(reconnectTimeout);
+            clearTimeout(reconnectTimeout); reconnectTimeout = null;
             if (pingTimer) clearInterval(pingTimer);
-            if (ws) { try { ws.close(); } catch(e){} }
-            if (pc) { try { pc.close(); } catch(e){} }
+            // Detach first: the old socket's onclose would otherwise schedule yet another restart.
+            if (ws) { ws.onopen = ws.onmessage = ws.onclose = ws.onerror = null; try { ws.close(); } catch(e){} ws = null; }
+            if (pc) { pc.oniceconnectionstatechange = null; try { pc.close(); } catch(e){} pc = null; }
             pendingCandidates = []; isRemoteDescSet = false;
             currentSessionId = 'sess_' + Date.now();
             if (!targetRoomId || !targetPin) { showSecurityGate(); return; }
             updateStatus('Verbinde', '');
             // The broker token only identifies this viewer. The PIN is not part of the connection URL.
             const wsUrl = 'wss://0.peerjs.com/peerjs?key=peerjs&id=' + myViewerId + '&token=' + encodeURIComponent(myViewerId);
-            ws = new WebSocket(wsUrl);
+            const thisWs = new WebSocket(wsUrl);
+            ws = thisWs;
             ws.onopen = () => {
                 updateStatus('Rufe ' + targetRoomId, '');
                 initWebRtc();
@@ -387,17 +396,21 @@
                     } else if (msg.type === 'EXPIRE') {
                         clearTimeout(answerTimer);
                         showSecurityGate('Kamera nicht erreichbar. Läuft der Stream, stimmt die Kamera-ID?');
+                    } else if (msg.type === 'ID-TAKEN') {
+                        // The broker still holds our previous socket. Come back under a new ID.
+                        myViewerId = 'vwr-' + Math.random().toString(36).substring(2, 9);
+                        clearTimeout(reconnectTimeout);
+                        reconnectTimeout = setTimeout(startP2pConnection, 500);
                     } else if (msg.type === 'PING') {
                         ws.send(JSON.stringify({ type: 'PONG' }));
                     }
                 } catch (e) { console.error('Signaling error', e); }
             };
             ws.onclose = () => {
+                if (ws !== thisWs) return;
                 if (pingTimer) clearInterval(pingTimer);
-                if (isAuthenticated && (!pc || (pc.iceConnectionState !== 'connected' && pc.iceConnectionState !== 'completed'))) {
-                    updateStatus('Verbindung wird wiederhergestellt', 'warn');
-                    reconnectTimeout = setTimeout(startP2pConnection, 4000);
-                }
+                // A running video doesn't need the broker; only reconnect if there is no stream.
+                if (!pc || (pc.iceConnectionState !== 'connected' && pc.iceConnectionState !== 'completed')) scheduleReconnect(4000);
             };
             ws.onerror = () => { if (!isAuthenticated) showSecurityGate('Relay nicht erreichbar'); };
         }
@@ -409,7 +422,8 @@
                     { urls: 'stun:stun.syncthing.net:3478' }
                 ]
             };
-            pc = new RTCPeerConnection(config);
+            const thisPc = new RTCPeerConnection(config);
+            pc = thisPc;
             pc.addTransceiver('video', { direction: 'recvonly' });
             pc.addTransceiver('audio', { direction: 'recvonly' });
             dataChannel = pc.createDataChannel('camera_controls', { ordered: true });
@@ -422,10 +436,17 @@
                 }
             };
             pc.oniceconnectionstatechange = () => {
-                if (pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed') {
+                if (pc !== thisPc) return;
+                const st = thisPc.iceConnectionState;
+                if (st === 'connected' || st === 'completed') {
+                    clearTimeout(reconnectTimeout); reconnectTimeout = null;
                     hideSecurityGate(); updateStatus('Live', 'live');
-                } else if (pc.iceConnectionState === 'failed' || pc.iceConnectionState === 'disconnected') {
-                    if (isAuthenticated) { updateStatus('Verbindung wird wiederhergestellt', 'warn'); reconnectTimeout = setTimeout(startP2pConnection, 3000); }
+                } else if (st === 'failed') {
+                    scheduleReconnect(1000);
+                } else if (st === 'disconnected') {
+                    // Often heals by itself within seconds (Wi-Fi hiccup, another viewer joining).
+                    // Restarting at once replaced the stream on the camera for nothing.
+                    scheduleReconnect(6000);
                 }
             };
             pc.ontrack = (event) => {
