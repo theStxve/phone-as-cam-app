@@ -71,8 +71,8 @@ object P2pSignalingManager {
     private var idTakenRetries = 0
     private var reconnectFuture: ScheduledFuture<*>? = null
 
-    @Volatile private var currentRemotePeer: String? = null
-    @Volatile private var currentConnectionId: String? = null
+    data class AuthenticatedPeer(val peerId: String, val connectionId: String, val timestamp: Long)
+    private val authenticatedPeers = java.util.concurrent.ConcurrentHashMap<String, AuthenticatedPeer>()
 
     private var okHttpClient: OkHttpClient? = null
     private var webSocket: WebSocket? = null
@@ -118,11 +118,6 @@ object P2pSignalingManager {
     fun init(context: Context, streamingService: CameraStreamingService) {
         service = streamingService
         load(context)
-
-        // Hook up live candidate streaming from WebRtcManager
-        streamingService.webRtcManager?.onLocalCandidateGathered = { cand ->
-            forwardLocalCandidate(cand)
-        }
 
         okHttpClient = OkHttpClient.Builder()
             .readTimeout(0, TimeUnit.MILLISECONDS)
@@ -181,8 +176,7 @@ object P2pSignalingManager {
 
         // Terminate all current web & peer sessions immediately so only new PIN is accepted.
         // The broker connection stays: PIN checks happen here, not at the broker.
-        currentRemotePeer = null
-        currentConnectionId = null
+        authenticatedPeers.clear()
         service?.invalidateAllSessions()
         return pin
     }
@@ -193,8 +187,7 @@ object P2pSignalingManager {
         pinGuard.reset()
 
         // Terminate all current web & peer sessions immediately
-        currentRemotePeer = null
-        currentConnectionId = null
+        authenticatedPeers.clear()
         service?.invalidateAllSessions()
     }
 
@@ -206,8 +199,7 @@ object P2pSignalingManager {
         pinGuard.reset()
 
         // Terminate all current web & peer sessions immediately
-        currentRemotePeer = null
-        currentConnectionId = null
+        authenticatedPeers.clear()
         service?.invalidateAllSessions()
 
         // The room ID changed, so the broker needs a new registration.
@@ -218,9 +210,7 @@ object P2pSignalingManager {
         return roomId
     }
 
-    private fun forwardLocalCandidate(cand: org.webrtc.IceCandidate) {
-        val peer = currentRemotePeer ?: return
-        val connId = currentConnectionId ?: return
+    private fun forwardLocalCandidate(cand: org.webrtc.IceCandidate, dstPeer: String, connId: String) {
         if (!isConnected.get()) return
 
         executor.submit {
@@ -228,7 +218,7 @@ object P2pSignalingManager {
                 val candMsg = JSONObject().apply {
                     put("type", "CANDIDATE")
                     put("src", roomId)
-                    put("dst", peer)
+                    put("dst", dstPeer)
                     put("payload", JSONObject().apply {
                         put("candidate", JSONObject().apply {
                             put("candidate", cand.sdp)
@@ -240,9 +230,9 @@ object P2pSignalingManager {
                     })
                 }
                 webSocket?.send(candMsg.toString())
-                Log.d(TAG, "Sent live candidate to $peer: ${cand.sdp}")
+                Log.d(TAG, "Sent live candidate to $dstPeer: ${cand.sdp}")
             } catch (e: Exception) {
-                Log.w(TAG, "Failed to send live candidate", e)
+                Log.w(TAG, "Failed to send live candidate to $dstPeer", e)
             }
         }
     }
@@ -401,14 +391,14 @@ object P2pSignalingManager {
                     pinGuard.recordSuccess(PIN_GUARD_KEY)
                     if (offerSdp.isNotBlank()) {
                         Log.i(TAG, "Received authenticated P2P WebRTC OFFER from client: $src (connId: $connectionId)")
-                        currentRemotePeer = src
-                        currentConnectionId = connectionId
+                        authenticatedPeers[src] = AuthenticatedPeer(src, connectionId, System.currentTimeMillis())
                         handleRemoteOffer(src, connectionId, offerSdp)
                     }
                 }
                 "CANDIDATE" -> {
-                    // Only accept candidates from current authenticated remote peer
-                    if (currentRemotePeer == null || src != currentRemotePeer) {
+                    // Only accept candidates from authenticated remote peers
+                    val peerInfo = authenticatedPeers[src]
+                    if (peerInfo == null) {
                         Log.w(TAG, "Ignored candidate from unauthenticated peer: $src")
                         return
                     }
@@ -419,7 +409,7 @@ object P2pSignalingManager {
                     val sdpMLineIndex = candObj.optInt("sdpMLineIndex", 0)
 
                     if (candSdp.isNotBlank()) {
-                        service?.webRtcManager?.addRemoteCandidate(sdpMid, sdpMLineIndex, candSdp, null)
+                        service?.webRtcManager?.addRemoteCandidate(sdpMid, sdpMLineIndex, candSdp, peerId = src)
                     }
                 }
                 "ID-TAKEN" -> {
@@ -455,18 +445,20 @@ object P2pSignalingManager {
     private fun handleRemoteOffer(remoteSrc: String, connectionId: String, offerSdp: String) {
         val rtcMgr = service?.webRtcManager ?: return
 
-        // Make sure the trickle ICE callback is attached to current manager
-        rtcMgr.onLocalCandidateGathered = { cand ->
-            forwardLocalCandidate(cand)
-        }
-
         executor.submit {
             try {
                 val offerJson = JSONObject().apply {
                     put("sdp", offerSdp)
                 }.toString()
 
-                val answerJsonStr = rtcMgr.handleOffer(offerJson, null, audioOnByDefault = true)
+                val answerJsonStr = rtcMgr.handleOffer(
+                    offerJsonStr = offerJson,
+                    peerId = remoteSrc,
+                    audioOnByDefault = true,
+                    onLocalCandidate = { cand ->
+                        forwardLocalCandidate(cand, remoteSrc, connectionId)
+                    }
+                )
                 if (answerJsonStr != null) {
                     val answerParsed = JSONObject(answerJsonStr)
                     val answerSdp = answerParsed.optString("sdp")
@@ -488,8 +480,8 @@ object P2pSignalingManager {
                     webSocket?.send(answerMsg.toString())
                     Log.i(TAG, "Sent P2P WebRTC ANSWER to $remoteSrc")
 
-                    // 2. Send already-gathered ICE candidates
-                    val candidates = rtcMgr.gatheredCandidates
+                    // 2. Send already-gathered ICE candidates for this peer
+                    val candidates = rtcMgr.getGatheredCandidates(remoteSrc)
                     synchronized(candidates) {
                         for (cand in candidates) {
                             val candMsg = JSONObject().apply {
@@ -511,7 +503,7 @@ object P2pSignalingManager {
                     }
                 }
             } catch (e: Exception) {
-                Log.e(TAG, "Failed handling remote P2P offer", e)
+                Log.e(TAG, "Failed handling remote P2P offer from $remoteSrc", e)
             }
         }
     }

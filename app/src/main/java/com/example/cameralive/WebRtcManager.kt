@@ -8,14 +8,30 @@ import org.webrtc.*
 import java.net.Inet4Address
 import java.net.NetworkInterface
 import java.util.Collections
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 
 class WebRtcManager(private val context: Context) {
 
     companion object {
         private const val TAG = "WebRtcManager"
+        const val MAX_CONCURRENT_PEERS = 4
     }
+
+    class PeerSession(
+        val peerId: String,
+        val peerConnection: PeerConnection,
+        var videoSender: RtpSender? = null,
+        val gatheredCandidates: MutableList<IceCandidate> = Collections.synchronizedList(mutableListOf()),
+        val pendingRemoteCandidates: MutableList<IceCandidate> = Collections.synchronizedList(mutableListOf()),
+        @Volatile var isRemoteDescriptionSet: Boolean = false,
+        var dataChannel: DataChannel? = null,
+        var onLocalCandidateGathered: ((IceCandidate) -> Unit)? = null,
+        val isConnected: AtomicBoolean = AtomicBoolean(false),
+        val createdAt: Long = System.currentTimeMillis()
+    )
 
     private var eglBase: EglBase? = null
     private var peerConnectionFactory: PeerConnectionFactory? = null
@@ -23,23 +39,11 @@ class WebRtcManager(private val context: Context) {
     private var videoTrack: VideoTrack? = null
 
     private var audioDeviceModule: org.webrtc.audio.JavaAudioDeviceModule? = null
+    private var sharedAudioSource: AudioSource? = null
+    private var sharedAudioTrack: AudioTrack? = null
 
-    // Per-session audio created in handleOffer()
-    private var sessionAudioSource: AudioSource? = null
-    private var sessionAudioTrack: AudioTrack? = null
-
-    private var currentPeerConnection: PeerConnection? = null
-    private var currentVideoSender: RtpSender? = null
-    private var currentDataChannel: DataChannel? = null
+    private val sessions = ConcurrentHashMap<String, PeerSession>()
     private var talkbackActive = false
-
-    // handleOffer holds this object's monitor while it waits for WebRTC callbacks, so those callbacks
-    // must never need it. pcLock is held only briefly and guards the connection against disposal.
-    private val pcLock = Any()
-    private val isPeerConnected = java.util.concurrent.atomic.AtomicBoolean(false)
-    val gatheredCandidates = Collections.synchronizedList(mutableListOf<IceCandidate>())
-    private val pendingRemoteCandidates = Collections.synchronizedList(mutableListOf<IceCandidate>())
-    @Volatile private var isRemoteDescriptionSet = false
 
     var onLocalCandidateGathered: ((IceCandidate) -> Unit)? = null
 
@@ -47,7 +51,18 @@ class WebRtcManager(private val context: Context) {
     @Volatile private var currentHeight = 480
     @Volatile private var currentTargetFps = 20
 
-    fun hasActivePeer(): Boolean = isPeerConnected.get()
+    fun hasActivePeer(): Boolean = sessions.values.any { it.isConnected.get() }
+    fun getActivePeerCount(): Int = sessions.values.count { it.isConnected.get() }
+
+    val gatheredCandidates: List<IceCandidate>
+        get() = sessions.values.firstOrNull()?.gatheredCandidates ?: emptyList()
+
+    fun getGatheredCandidates(peerId: String? = null): List<IceCandidate> {
+        if (peerId != null) {
+            return sessions[peerId]?.gatheredCandidates ?: emptyList()
+        }
+        return sessions.values.firstOrNull()?.gatheredCandidates ?: emptyList()
+    }
 
     // The camera pipeline already paces frames to the target rate. A second limiter with the same
     // rate would drop every frame that arrives slightly early and lower the real frame rate.
@@ -68,14 +83,20 @@ class WebRtcManager(private val context: Context) {
         currentTargetFps = fps
         try {
             videoSource?.adaptOutputFormat(currentWidth, currentHeight, adapterFps(fps))
-            currentVideoSender?.let { sender ->
-                val params = sender.parameters
-                for (encoding in params.encodings) {
-                    encoding.maxFramerate = fps
+            sessions.values.forEach { session ->
+                session.videoSender?.let { sender ->
+                    try {
+                        val params = sender.parameters
+                        for (encoding in params.encodings) {
+                            encoding.maxFramerate = fps
+                        }
+                        sender.parameters = params
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Failed to update WebRTC FPS for ${session.peerId}", e)
+                    }
                 }
-                sender.parameters = params
             }
-            Log.i(TAG, "WebRTC FPS adapted to $fps")
+            Log.i(TAG, "WebRTC FPS adapted to $fps across ${sessions.size} peer(s)")
         } catch (e: Exception) {
             Log.e(TAG, "Failed to update WebRTC FPS", e)
         }
@@ -86,15 +107,21 @@ class WebRtcManager(private val context: Context) {
             val maxBitrateBps = StreamBitrate.maxBps(quality)
             val minBitrateBps = StreamBitrate.minBps(quality)
 
-            currentVideoSender?.let { sender ->
-                val params = sender.parameters
-                for (encoding in params.encodings) {
-                    encoding.maxBitrateBps = maxBitrateBps
-                    encoding.minBitrateBps = minBitrateBps
+            sessions.values.forEach { session ->
+                session.videoSender?.let { sender ->
+                    try {
+                        val params = sender.parameters
+                        for (encoding in params.encodings) {
+                            encoding.maxBitrateBps = maxBitrateBps
+                            encoding.minBitrateBps = minBitrateBps
+                        }
+                        sender.parameters = params
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Failed to update bitrate for ${session.peerId}", e)
+                    }
                 }
-                sender.parameters = params
             }
-            Log.i(TAG, "WebRTC Bitrate updated for quality $quality%: max=${maxBitrateBps / 1000}kbps, min=${minBitrateBps / 1000}kbps")
+            Log.i(TAG, "WebRTC Bitrate updated for quality $quality%: max=${maxBitrateBps / 1000}kbps, min=${minBitrateBps / 1000}kbps across ${sessions.size} peer(s)")
         } catch (e: Exception) {
             Log.e(TAG, "Failed to update WebRTC bitrate for quality $quality", e)
         }
@@ -138,6 +165,18 @@ class WebRtcManager(private val context: Context) {
         videoSource?.adaptOutputFormat(640, 480, adapterFps(initialFps))
         videoSource?.capturerObserver?.onCapturerStarted(true)
         videoTrack = peerConnectionFactory?.createVideoTrack("ARDAMSv0", videoSource)
+
+        // Shared Audio
+        val audioConstraints = MediaConstraints().apply {
+            mandatory.add(MediaConstraints.KeyValuePair("googEchoCancellation", "true"))
+            mandatory.add(MediaConstraints.KeyValuePair("googAutoGainControl", "true"))
+            mandatory.add(MediaConstraints.KeyValuePair("googHighpassFilter", "true"))
+            mandatory.add(MediaConstraints.KeyValuePair("googNoiseSuppression", "true"))
+            mandatory.add(MediaConstraints.KeyValuePair("googTypingNoiseDetection", "true"))
+        }
+        sharedAudioSource = peerConnectionFactory?.createAudioSource(audioConstraints)
+        sharedAudioTrack = peerConnectionFactory?.createAudioTrack("ARDAMSa1", sharedAudioSource)
+        sharedAudioTrack?.setEnabled(false)
     }
 
     fun pushFrame(nv21: ByteArray, width: Int, height: Int, rotationDegrees: Int) {
@@ -191,58 +230,75 @@ class WebRtcManager(private val context: Context) {
         return list
     }
 
-    fun addRemoteCandidate(sdpMid: String, sdpMLineIndex: Int, candidateSdp: String, clientIp: String? = null) {
+    fun addRemoteCandidate(sdpMid: String, sdpMLineIndex: Int, candidateSdp: String, peerId: String? = null, clientIp: String? = null) {
         val cand = IceCandidate(sdpMid, sdpMLineIndex, candidateSdp)
-        synchronized(pcLock) {
-            val pc = currentPeerConnection
-            if (pc == null || !isRemoteDescriptionSet) {
-                pendingRemoteCandidates.add(cand)
-                return
+        val targetSession = if (peerId != null) {
+            sessions[peerId]
+        } else if (!clientIp.isNullOrBlank()) {
+            sessions[clientIp] ?: sessions.values.firstOrNull()
+        } else {
+            sessions.values.firstOrNull()
+        }
+
+        if (targetSession == null) {
+            Log.w(TAG, "No session found for candidate (peerId=$peerId, clientIp=$clientIp)")
+            return
+        }
+
+        val pc = targetSession.peerConnection
+        if (!targetSession.isRemoteDescriptionSet) {
+            targetSession.pendingRemoteCandidates.add(cand)
+            return
+        }
+
+        try {
+            pc.addIceCandidate(cand)
+            // A browser hides its address behind an mDNS name. If we know the client IP, add it directly.
+            if (candidateSdp.contains(".local") && !clientIp.isNullOrBlank()) {
+                val replaced = candidateSdp.replace(Regex("[a-zA-Z0-9-]+\\.local"), clientIp)
+                pc.addIceCandidate(IceCandidate(sdpMid, sdpMLineIndex, replaced))
             }
-            try {
-                pc.addIceCandidate(cand)
-                // A browser hides its address behind an mDNS name. If we know the client IP, add it directly.
-                if (candidateSdp.contains(".local") && !clientIp.isNullOrBlank()) {
-                    val replaced = candidateSdp.replace(Regex("[a-zA-Z0-9-]+\\.local"), clientIp)
-                    pc.addIceCandidate(IceCandidate(sdpMid, sdpMLineIndex, replaced))
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "Error adding remote candidate", e)
-            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error adding remote candidate for ${targetSession.peerId}", e)
         }
     }
 
     /**
-     * [audioOnByDefault]: the LAN page reports its mute state, so its mic stays off until asked for.
-     * P2P viewers published before set_audio existed never report it, so they start with audio on.
+     * Handles an incoming WebRTC offer from a peer.
+     * Multiple peers can be connected simultaneously.
      */
     @Synchronized
-    fun handleOffer(offerJsonStr: String, clientIp: String? = null, audioOnByDefault: Boolean = false): String? {
+    fun handleOffer(
+        offerJsonStr: String,
+        peerId: String = "default",
+        clientIp: String? = null,
+        audioOnByDefault: Boolean = false,
+        onLocalCandidate: ((IceCandidate) -> Unit)? = null
+    ): String? {
         val factory = peerConnectionFactory ?: return null
         val offerObj = JSONObject(offerJsonStr)
         val offerSdp = offerObj.getString("sdp")
 
         (context as? CameraStreamingService)?.onClientActivity()
 
-        // Free the previous session completely. close() alone leaks the native connection.
-        disposeSession()
+        // 1. If this exact peer already had an open session (e.g. browser refreshed), replace it cleanly
+        sessions[peerId]?.let { oldSession ->
+            Log.i(TAG, "Replacing existing session for peerId: $peerId")
+            disposeSession(oldSession)
+        }
+
+        // 2. If at capacity, evict disconnected or oldest session
+        if (sessions.size >= MAX_CONCURRENT_PEERS) {
+            val disconnected = sessions.values.firstOrNull { !it.isConnected.get() }
+            val toEvict = disconnected ?: sessions.values.minByOrNull { it.createdAt }
+            if (toEvict != null) {
+                Log.w(TAG, "Evicting peer ${toEvict.peerId} to accept new peer $peerId (max $MAX_CONCURRENT_PEERS reached)")
+                disposeSession(toEvict)
+            }
+        }
 
         // Stop fallback mic so WebRTC gets exclusive access to microphone hardware
         (context as? CameraStreamingService)?.stopMicIfIdle(force = true)
-
-        // Create fresh session audio with high-quality constraints for this peer connection
-        val audioConstraints = MediaConstraints().apply {
-            mandatory.add(MediaConstraints.KeyValuePair("googEchoCancellation", "true"))
-            mandatory.add(MediaConstraints.KeyValuePair("googAutoGainControl", "true"))
-            mandatory.add(MediaConstraints.KeyValuePair("googHighpassFilter", "true"))
-            mandatory.add(MediaConstraints.KeyValuePair("googNoiseSuppression", "true"))
-            mandatory.add(MediaConstraints.KeyValuePair("googTypingNoiseDetection", "true"))
-        }
-        val freshAudioSource = factory.createAudioSource(audioConstraints)
-        sessionAudioSource = freshAudioSource
-        val freshAudioTrack = factory.createAudioTrack("ARDAMSa1", freshAudioSource)
-        freshAudioTrack.setEnabled(audioOnByDefault)
-        sessionAudioTrack = freshAudioTrack
 
         val iceServers = listOf(
             PeerConnection.IceServer.builder("stun:stun.cloudflare.com:3478").createIceServer(),
@@ -258,40 +314,45 @@ class WebRtcManager(private val context: Context) {
         }
 
         val gatheringLatch = CountDownLatch(1)
+        lateinit var session: PeerSession
 
-        // Callbacks of a replaced connection arrive late and must not touch the current session.
-        var thisConnection: PeerConnection? = null
         val pcObserver = object : PeerConnection.Observer {
             override fun onSignalingChange(state: PeerConnection.SignalingState?) {
-                Log.d(TAG, "Signaling State: $state")
+                Log.d(TAG, "[$peerId] Signaling State: $state")
             }
             override fun onIceConnectionChange(state: PeerConnection.IceConnectionState?) {
-                Log.d(TAG, "ICE Connection State: $state")
-                if (thisConnection != null && thisConnection !== currentPeerConnection) return
+                Log.d(TAG, "[$peerId] ICE Connection State: $state")
                 when (state) {
                     PeerConnection.IceConnectionState.CONNECTED,
                     PeerConnection.IceConnectionState.COMPLETED -> {
-                        isPeerConnected.set(true)
+                        session.isConnected.set(true)
+                        (context as? CameraStreamingService)?.let {
+                            CameraStreamingService.activeViewers.value = getActivePeerCount()
+                        }
                     }
                     PeerConnection.IceConnectionState.DISCONNECTED,
                     PeerConnection.IceConnectionState.FAILED,
                     PeerConnection.IceConnectionState.CLOSED -> {
-                        isPeerConnected.set(false)
+                        session.isConnected.set(false)
+                        (context as? CameraStreamingService)?.let {
+                            CameraStreamingService.activeViewers.value = getActivePeerCount()
+                        }
                     }
                     else -> {}
                 }
             }
             override fun onIceConnectionReceivingChange(receiving: Boolean) {}
             override fun onIceGatheringChange(state: PeerConnection.IceGatheringState?) {
-                Log.d(TAG, "ICE Gathering State: $state")
+                Log.d(TAG, "[$peerId] ICE Gathering State: $state")
                 if (state == PeerConnection.IceGatheringState.COMPLETE) {
                     gatheringLatch.countDown()
                 }
             }
             override fun onIceCandidate(candidate: IceCandidate?) {
                 if (candidate != null) {
-                    Log.d(TAG, "Phone gathered candidate: ${candidate.sdp}")
-                    gatheredCandidates.add(candidate)
+                    Log.d(TAG, "[$peerId] Gathered candidate: ${candidate.sdp}")
+                    session.gatheredCandidates.add(candidate)
+                    session.onLocalCandidateGathered?.invoke(candidate)
                     onLocalCandidateGathered?.invoke(candidate)
                 }
             }
@@ -300,12 +361,12 @@ class WebRtcManager(private val context: Context) {
             override fun onRemoveStream(stream: MediaStream?) {}
             override fun onDataChannel(channel: DataChannel?) {
                 if (channel == null) return
-                Log.i(TAG, "DataChannel received: ${channel.label()}")
-                currentDataChannel = channel
+                Log.i(TAG, "[$peerId] DataChannel received: ${channel.label()}")
+                session.dataChannel = channel
                 channel.registerObserver(object : DataChannel.Observer {
                     override fun onBufferedAmountChange(p0: Long) {}
                     override fun onStateChange() {
-                        Log.i(TAG, "DataChannel state changed: ${channel.state()}")
+                        Log.i(TAG, "[$peerId] DataChannel state changed: ${channel.state()}")
                     }
                     override fun onMessage(buffer: DataChannel.Buffer) {
                         try {
@@ -314,31 +375,36 @@ class WebRtcManager(private val context: Context) {
                             val str = String(data, Charsets.UTF_8)
                             handleDataChannelMessage(channel, str)
                         } catch (e: Exception) {
-                            Log.e(TAG, "Error reading DataChannel message", e)
+                            Log.e(TAG, "[$peerId] Error reading DataChannel message", e)
                         }
                     }
                 })
             }
             override fun onRenegotiationNeeded() {}
             override fun onAddTrack(receiver: RtpReceiver?, streams: Array<out MediaStream>?) {
-                Log.d(TAG, "Incoming WebRTC track: ${receiver?.track()?.kind()} id=${receiver?.track()?.id()}")
+                Log.d(TAG, "[$peerId] Incoming WebRTC track: ${receiver?.track()?.kind()} id=${receiver?.track()?.id()}")
                 receiver?.track()?.setEnabled(true)
             }
         }
 
         val pc = factory.createPeerConnection(rtcConfig, pcObserver) ?: return null
-        thisConnection = pc
-        synchronized(pcLock) {
-            currentPeerConnection = pc
-            // The audio hardware stays idle until someone listens or talks.
-            pc.setAudioRecording(audioOnByDefault)
-            pc.setAudioPlayout(talkbackActive)
+        session = PeerSession(
+            peerId = peerId,
+            peerConnection = pc,
+            onLocalCandidateGathered = onLocalCandidate
+        )
+        sessions[peerId] = session
+
+        pc.setAudioRecording(audioOnByDefault)
+        pc.setAudioPlayout(talkbackActive)
+        if (audioOnByDefault) {
+            sharedAudioTrack?.setEnabled(true)
         }
 
         val streamIds = listOf("ARDAMS")
         val rtpSender = videoTrack?.let { pc.addTrack(it, streamIds) }
-        currentVideoSender = rtpSender
-        pc.addTrack(freshAudioTrack, streamIds)
+        session.videoSender = rtpSender
+        sharedAudioTrack?.let { pc.addTrack(it, streamIds) }
 
         val currentFps = (context as? CameraStreamingService)?.maxFps?.get() ?: 20
         val currentQuality = (context as? CameraStreamingService)?.jpegQuality?.get() ?: 20
@@ -355,17 +421,15 @@ class WebRtcManager(private val context: Context) {
                 }
                 sender.parameters = params
             } catch (e: Exception) {
-                Log.w(TAG, "Failed to set sender parameters", e)
+                Log.w(TAG, "Failed to set sender parameters for $peerId", e)
             }
         }
 
         val sdpLatch = CountDownLatch(1)
-
-        // 1. Set Remote Description (Offer)
         val sessionDesc = SessionDescription(SessionDescription.Type.OFFER, offerSdp)
         pc.setRemoteDescription(object : SdpObserver {
             override fun onSetSuccess() {
-                isRemoteDescriptionSet = true
+                session.isRemoteDescriptionSet = true
 
                 // Add any candidates included in the offer
                 val browserCandidates = offerObj.optJSONArray("candidates")
@@ -375,34 +439,29 @@ class WebRtcManager(private val context: Context) {
                         val sdp = c.getString("candidate")
                         val mid = c.optString("sdpMid", "0")
                         val mline = c.optInt("sdpMLineIndex", 0)
-                        addRemoteCandidate(mid, mline, sdp, clientIp)
+                        addRemoteCandidate(mid, mline, sdp, peerId = peerId, clientIp = clientIp)
                     }
                 }
 
                 // Drain any pending remote candidates that arrived before setRemoteDescription
-                synchronized(pcLock) {
-                    if (pc === currentPeerConnection) {
-                        for (c in pendingRemoteCandidates) {
-                            try {
-                                pc.addIceCandidate(c)
-                            } catch (e: Exception) {
-                                Log.e(TAG, "Error adding drained remote candidate", e)
-                            }
+                synchronized(session.pendingRemoteCandidates) {
+                    for (c in session.pendingRemoteCandidates) {
+                        try {
+                            pc.addIceCandidate(c)
+                        } catch (e: Exception) {
+                            Log.e(TAG, "[$peerId] Error adding drained remote candidate", e)
                         }
                     }
-                    pendingRemoteCandidates.clear()
+                    session.pendingRemoteCandidates.clear()
                 }
 
                 // 2. Create Answer
                 val constraints = MediaConstraints()
                 pc.createAnswer(object : SdpObserver {
                     override fun onCreateSuccess(desc: SessionDescription) {
-                        // Force Constrained Baseline profile via SDP munging:
-                        // Replace any H.264 High Profile (profile-level-id=64xxxx) with
-                        // Constrained Baseline (42e01f) to avoid CABAC/B-frame encoding latency.
                         val mungedSdp = forceBaselineProfile(desc.description)
                         val mungedDesc = SessionDescription(desc.type, mungedSdp)
-                        Log.d(TAG, "SDP answer munged: High Profile → Constrained Baseline")
+                        Log.d(TAG, "[$peerId] SDP answer munged to Constrained Baseline")
 
                         // 3. Set Local Description (Answer)
                         pc.setLocalDescription(object : SdpObserver {
@@ -410,7 +469,7 @@ class WebRtcManager(private val context: Context) {
                                 sdpLatch.countDown()
                             }
                             override fun onSetFailure(error: String?) {
-                                Log.e(TAG, "setLocalDescription failed: $error")
+                                Log.e(TAG, "[$peerId] setLocalDescription failed: $error")
                                 sdpLatch.countDown()
                             }
                             override fun onCreateSuccess(p0: SessionDescription?) {}
@@ -419,7 +478,7 @@ class WebRtcManager(private val context: Context) {
                     }
 
                     override fun onCreateFailure(error: String?) {
-                        Log.e(TAG, "createAnswer failed: $error")
+                        Log.e(TAG, "[$peerId] createAnswer failed: $error")
                         sdpLatch.countDown()
                     }
                     override fun onSetSuccess() {}
@@ -428,25 +487,25 @@ class WebRtcManager(private val context: Context) {
             }
 
             override fun onSetFailure(error: String?) {
-                Log.e(TAG, "setRemoteDescription failed: $error")
+                Log.e(TAG, "[$peerId] setRemoteDescription failed: $error")
                 sdpLatch.countDown()
             }
             override fun onCreateSuccess(p0: SessionDescription?) {}
             override fun onCreateFailure(p0: String?) {}
         }, sessionDesc)
 
-        sdpLatch.await(3, TimeUnit.SECONDS)
+        try { sdpLatch.await(3, TimeUnit.SECONDS) } catch (e: InterruptedException) {}
+        try { gatheringLatch.await(1200, TimeUnit.MILLISECONDS) } catch (e: InterruptedException) {}
 
-        // Wait up to 1.2 seconds for ICE candidates to gather
-        gatheringLatch.await(1200, TimeUnit.MILLISECONDS)
-
-        val finalLocalDesc = pc.localDescription ?: return null
+        val finalLocalDesc = pc.localDescription ?: run {
+            disposeSession(session)
+            return null
+        }
 
         // SYNTHESIZE CANDIDATES FOR TAILSCALE / VPN / ALL LOCAL INTERFACES
-        // If WebRTC gathered a UDP candidate, we know the UDP port listening on 0.0.0.0
         val deviceIps = getAllDeviceIpv4s()
-        val existingCandSdps = synchronized(gatheredCandidates) { gatheredCandidates.map { it.sdp }.toMutableList() }
-        
+        val existingCandSdps = synchronized(session.gatheredCandidates) { session.gatheredCandidates.map { it.sdp }.toMutableList() }
+
         var udpPort: Int? = null
         var ufrag: String? = null
         for (candSdp in existingCandSdps) {
@@ -470,16 +529,16 @@ class WebRtcManager(private val context: Context) {
                     val synthSdp = "candidate:synth${synthIdx++} 1 udp 2122000000 $ip $udpPort typ host generation 0$ufragPart"
                     val synthCand0 = IceCandidate("0", 0, synthSdp)
                     val synthCand1 = IceCandidate("1", 1, synthSdp)
-                    gatheredCandidates.add(synthCand0)
-                    gatheredCandidates.add(synthCand1)
-                    Log.i(TAG, "Synthesized local/VPN candidate: $synthSdp")
+                    session.gatheredCandidates.add(synthCand0)
+                    session.gatheredCandidates.add(synthCand1)
+                    Log.i(TAG, "[$peerId] Synthesized local/VPN candidate: $synthSdp")
                 }
             }
         }
 
         val candidatesJsonArr = JSONArray()
-        synchronized(gatheredCandidates) {
-            for (c in gatheredCandidates) {
+        synchronized(session.gatheredCandidates) {
+            for (c in session.gatheredCandidates) {
                 val cJson = JSONObject().apply {
                     put("candidate", c.sdp)
                     put("sdpMid", c.sdpMid)
@@ -497,17 +556,21 @@ class WebRtcManager(private val context: Context) {
         return responseObj.toString()
     }
 
-    /** Starts or stops the phone microphone for the WebRTC session. */
-    fun setAudioEnabled(enabled: Boolean) = synchronized(pcLock) {
-        sessionAudioTrack?.setEnabled(enabled)
-        currentPeerConnection?.setAudioRecording(enabled)
-        Log.d(TAG, "Microphone for WebRTC enabled=$enabled")
+    /** Starts or stops the phone microphone for all active WebRTC sessions. */
+    fun setAudioEnabled(enabled: Boolean) {
+        sharedAudioTrack?.setEnabled(enabled)
+        sessions.values.forEach { session ->
+            session.peerConnection.setAudioRecording(enabled)
+        }
+        Log.d(TAG, "Microphone for WebRTC enabled=$enabled across ${sessions.size} peer(s)")
     }
 
     /** Starts or stops audio output for browser talkback. */
-    fun setTalkbackEnabled(enabled: Boolean) = synchronized(pcLock) {
+    fun setTalkbackEnabled(enabled: Boolean) {
         talkbackActive = enabled
-        currentPeerConnection?.setAudioPlayout(enabled)
+        sessions.values.forEach { session ->
+            session.peerConnection.setAudioPlayout(enabled)
+        }
     }
 
     private fun handleDataChannelMessage(channel: DataChannel, msgStr: String) {
@@ -551,69 +614,91 @@ class WebRtcManager(private val context: Context) {
                     channel.send(DataChannel.Buffer(java.nio.ByteBuffer.wrap(reply.toByteArray(Charsets.UTF_8)), false))
                     return
                 }
-                "get_state"         -> { /* no-op – comprehensive state reply sent below */ }
+                "get_state"         -> { /* state reply sent below */ }
             }
-            // Send back comprehensive state update
-            val response = JSONObject().apply {
-                put("type", "state_update")
-                put("flashlight", svc?.isFlashlightActive() ?: false)
-                put("wideAngle",  svc?.isWideAngleActive() ?: false)
-                put("zoom",       svc?.getZoomRatio() ?: 1.0f)
-                put("exposure",   svc?.getExposureCompensation() ?: 0)
-                put("siren",      AlarmSoundManager.isSirenPlaying())
-                put("nightBoost", svc?.autoNightBoostEnabled?.get() ?: false)
-                put("facing",     if (svc?.isFrontFacing() == true) "front" else "back")
-                try {
-                    val ai = JSONObject(AiMotionDetector.getAiStateJson())
-                    put("aiEnabled",   ai.optBoolean("enabled", false))
-                    put("aiStatus",    ai.optString("status", ""))
-                    put("aiLastAlarm", ai.optString("lastAlarm", ""))
-                } catch (e: Exception) {
-                    put("aiEnabled", false)
-                    put("aiStatus", "")
-                    put("aiLastAlarm", "")
-                }
-            }
-            val bytes = response.toString().toByteArray(Charsets.UTF_8)
-            val outBuffer = DataChannel.Buffer(java.nio.ByteBuffer.wrap(bytes), false)
-            channel.send(outBuffer)
+
+            broadcastStateUpdate()
         } catch (e: Exception) {
             Log.e(TAG, "Error handling DataChannel message", e)
         }
     }
 
-    /** Frees everything that belongs to one viewer session. Base video objects stay. */
-    private fun disposeSession() = synchronized(pcLock) {
-        isPeerConnected.set(false)
-        currentVideoSender = null
-        gatheredCandidates.clear()
-        pendingRemoteCandidates.clear()
-        isRemoteDescriptionSet = false
-        val pc = currentPeerConnection
-        currentPeerConnection = null
-        try {
-            currentDataChannel?.unregisterObserver()
-            currentDataChannel?.dispose()
-        } catch (e: Exception) {
-            Log.w(TAG, "Error disposing data channel", e)
+    /** Broadcasts state update across all active data channels. */
+    fun broadcastStateUpdate() {
+        val svc = context as? CameraStreamingService
+        val response = JSONObject().apply {
+            put("type", "state_update")
+            put("flashlight", svc?.isFlashlightActive() ?: false)
+            put("wideAngle",  svc?.isWideAngleActive() ?: false)
+            put("zoom",       svc?.getZoomRatio() ?: 1.0f)
+            put("exposure",   svc?.getExposureCompensation() ?: 0)
+            put("siren",      AlarmSoundManager.isSirenPlaying())
+            put("nightBoost", svc?.autoNightBoostEnabled?.get() ?: false)
+            put("facing",     if (svc?.isFrontFacing() == true) "front" else "back")
+            try {
+                val ai = JSONObject(AiMotionDetector.getAiStateJson())
+                put("aiEnabled",   ai.optBoolean("enabled", false))
+                put("aiStatus",    ai.optString("status", ""))
+                put("aiLastAlarm", ai.optString("lastAlarm", ""))
+            } catch (e: Exception) {
+                put("aiEnabled", false)
+                put("aiStatus", "")
+                put("aiLastAlarm", "")
+            }
         }
-        currentDataChannel = null
-        try { pc?.dispose() } catch (e: Exception) { Log.w(TAG, "Error disposing peer connection", e) }
-        try { sessionAudioTrack?.dispose() } catch (e: Exception) { Log.w(TAG, "Error disposing audio track", e) }
-        try { sessionAudioSource?.dispose() } catch (e: Exception) { Log.w(TAG, "Error disposing audio source", e) }
-        sessionAudioTrack = null
-        sessionAudioSource = null
+        val bytes = response.toString().toByteArray(Charsets.UTF_8)
+        sessions.values.forEach { s ->
+            s.dataChannel?.let { dc ->
+                if (dc.state() == DataChannel.State.OPEN) {
+                    try {
+                        dc.send(DataChannel.Buffer(java.nio.ByteBuffer.wrap(bytes), false))
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Failed to send state update to ${s.peerId}", e)
+                    }
+                }
+            }
+        }
+    }
+
+    private fun disposeSession(session: PeerSession) {
+        session.isConnected.set(false)
+        sessions.remove(session.peerId)
+        try {
+            session.dataChannel?.unregisterObserver()
+            session.dataChannel?.dispose()
+        } catch (e: Exception) {
+            Log.w(TAG, "Error disposing data channel for ${session.peerId}", e)
+        }
+        session.dataChannel = null
+        try {
+            session.peerConnection.dispose()
+        } catch (e: Exception) {
+            Log.w(TAG, "Error disposing peer connection for ${session.peerId}", e)
+        }
+        (context as? CameraStreamingService)?.let {
+            CameraStreamingService.activeViewers.value = getActivePeerCount()
+        }
+        Log.i(TAG, "Disposed session for peer ${session.peerId}. Active peers: ${getActivePeerCount()}")
     }
 
     @Synchronized
-    fun closePeerConnection() {
-        disposeSession()
-        Log.i(TAG, "Closed WebRTC peer connection")
+    fun closePeerConnection(peerId: String? = null) {
+        if (peerId != null) {
+            sessions[peerId]?.let { disposeSession(it) }
+        } else {
+            sessions.values.toList().forEach { disposeSession(it) }
+        }
+        Log.i(TAG, "Closed WebRTC peer connection(s)")
     }
 
     @Synchronized
     fun release() {
-        disposeSession()
+        closePeerConnection(null)
+
+        sharedAudioTrack?.dispose()
+        sharedAudioSource?.dispose()
+        sharedAudioTrack = null
+        sharedAudioSource = null
 
         videoSource?.capturerObserver?.onCapturerStopped()
         videoTrack?.dispose()

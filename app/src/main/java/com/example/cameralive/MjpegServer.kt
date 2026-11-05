@@ -257,7 +257,8 @@ class MjpegServer(port: Int, private val controller: CameraController) : NanoHTT
                         val buffer = readBody(session, MAX_SIGNALING_BODY)
                             ?: return newFixedLengthResponse(Response.Status.BAD_REQUEST, "text/plain", "Invalid offer")
                         val offerJsonStr = String(buffer, Charsets.UTF_8)
-                        val answerJson = service?.webRtcManager?.handleOffer(offerJsonStr, session.remoteIpAddress)
+                        val peerId = session.remoteIpAddress ?: "lan-viewer"
+                        val answerJson = service?.webRtcManager?.handleOffer(offerJsonStr, peerId = peerId, clientIp = session.remoteIpAddress)
                         if (answerJson != null) {
                             val res = newFixedLengthResponse(Response.Status.OK, "application/json", answerJson)
                             res.addHeader("Access-Control-Allow-Origin", "*")
@@ -278,7 +279,8 @@ class MjpegServer(port: Int, private val controller: CameraController) : NanoHTT
                         val candidateSdp = candidateJson.getString("candidate")
                         val sdpMid = candidateJson.optString("sdpMid", "0")
                         val sdpMLineIndex = candidateJson.optInt("sdpMLineIndex", 0)
-                        service?.webRtcManager?.addRemoteCandidate(sdpMid, sdpMLineIndex, candidateSdp, session.remoteIpAddress)
+                        val peerId = session.remoteIpAddress ?: "lan-viewer"
+                        service?.webRtcManager?.addRemoteCandidate(sdpMid, sdpMLineIndex, candidateSdp, peerId = peerId, clientIp = session.remoteIpAddress)
                         return newFixedLengthResponse(Response.Status.OK, "text/plain", "OK")
                     } catch (e: Exception) {
                         android.util.Log.w("MjpegServer", "Invalid ICE candidate", e)
@@ -287,7 +289,7 @@ class MjpegServer(port: Int, private val controller: CameraController) : NanoHTT
                 }
             }
             "/webrtc_candidates" -> {
-                val list = service?.webRtcManager?.gatheredCandidates
+                val list = service?.webRtcManager?.getGatheredCandidates(session.remoteIpAddress)
                 val arr = JSONArray()
                 if (list != null) {
                     synchronized(list) {
