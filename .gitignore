@@ -60,3 +60,11 @@ captures/
 .Trashes
 ehthumbs.db
 Thumbs.db
+
+# Local secrets and scratch files, never commit these
+client_secret*.json
+capture_*.jpg
+oAuth.png
+ssd-mobilenet-*.tar.gz
+/efficientdet_lite0.tflite
+/woooo.mp3

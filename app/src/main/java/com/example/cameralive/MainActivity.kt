@@ -29,12 +29,28 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.sp
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.shape.CircleShape
+import com.example.cameralive.theme.Amber
+import com.example.cameralive.theme.Bad
+import com.example.cameralive.theme.Good
+import com.example.cameralive.theme.PlexMono
+import com.example.cameralive.theme.Surface3
+import com.example.cameralive.theme.TextMuted
+import com.example.cameralive.theme.TextPrimary
+import com.example.cameralive.theme.TextSecondary
 import androidx.compose.ui.text.style.TextAlign
 
 class MainActivity : ComponentActivity() {
 
     private var savedPort = "8080"
-    private var serviceStarted = false
 
     private val googleSignInLauncher =
         registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
@@ -83,13 +99,17 @@ class MainActivity : ComponentActivity() {
             if (cameraGranted && audioGranted) {
                 // Start after permissions granted (app is in foreground at this point)
                 startStreamService(savedPort.toIntOrNull() ?: 8080)
-                serviceStarted = true
+            } else {
+                Toast.makeText(this, "Kamera und Mikrofon werden für den Stream gebraucht", Toast.LENGTH_LONG).show()
             }
         }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         
+        // Ensure P2P ID and PIN are loaded immediately
+        P2pSignalingManager.load(this)
+
         // Prevent system from killing stream when device locks / screen turns off
         requestBatteryOptimizationExemption()
 
@@ -140,7 +160,7 @@ class MainActivity : ComponentActivity() {
                         contentAlignment = Alignment.Center
                     ) {
                         Text(
-                            text = "🌙 AMOLED Sparmodus aktiv\n\nStream läuft zuverlässig im Hintergrund\n(auch bei ausgeschaltetem Bildschirm)\n\n👉 Tippen zum Aufwecken",
+                            text = "Stream läuft weiter\n\nTippen zum Aufwecken",
                             color = Color.DarkGray,
                             textAlign = TextAlign.Center,
                             style = MaterialTheme.typography.bodyMedium
@@ -176,11 +196,9 @@ class MainActivity : ComponentActivity() {
                             },
                             onStartStream = {
                                 savedPort = portText
-                                serviceStarted = true
                                 startStreamService(portText.toIntOrNull() ?: 8080)
                             },
                             onStopStream = {
-                                serviceStarted = false
                                 stopStreamService()
                             },
                             onEnterBlackoutMode = {
@@ -211,12 +229,14 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
-        if (!serviceStarted) {
+        // A stream the user stopped stays stopped, and a running one is left alone.
+        val userStopped = getSharedPreferences(CameraStreamingService.PREFS, Context.MODE_PRIVATE)
+            .getBoolean(CameraStreamingService.KEY_USER_STOPPED, false)
+        if (CameraStreamingService.runningInstance == null && !userStopped) {
             val cameraGranted = checkSelfPermission(Manifest.permission.CAMERA) == android.content.pm.PackageManager.PERMISSION_GRANTED
             val audioGranted = checkSelfPermission(Manifest.permission.RECORD_AUDIO) == android.content.pm.PackageManager.PERMISSION_GRANTED
             if (cameraGranted && audioGranted) {
                 startStreamService(savedPort.toIntOrNull() ?: 8080)
-                serviceStarted = true
             }
         }
     }
@@ -233,6 +253,8 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun stopStreamService() {
+        getSharedPreferences(CameraStreamingService.PREFS, Context.MODE_PRIVATE).edit()
+            .putBoolean(CameraStreamingService.KEY_USER_STOPPED, true).apply()
         stopService(Intent(this, CameraStreamingService::class.java))
     }
 
@@ -263,6 +285,44 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+/** Viewfinder corners, the same mark the browser draws around detections and the PIN. */
+private fun Modifier.finderCorners(color: Color, length: Dp = 14.dp, stroke: Dp = 2.dp): Modifier = drawBehind {
+    val l = length.toPx()
+    val s = stroke.toPx()
+    val w = size.width
+    val h = size.height
+    fun line(a: Offset, b: Offset) = drawLine(color, a, b, s, StrokeCap.Square)
+    line(Offset(0f, l), Offset.Zero); line(Offset.Zero, Offset(l, 0f))
+    line(Offset(w - l, 0f), Offset(w, 0f)); line(Offset(w, 0f), Offset(w, l))
+    line(Offset(0f, h - l), Offset(0f, h)); line(Offset(0f, h), Offset(l, h))
+    line(Offset(w - l, h), Offset(w, h)); line(Offset(w, h), Offset(w, h - l))
+}
+
+@Composable
+private fun StatusLine(running: Boolean, viewerCount: Int) {
+    val (dot, text) = when {
+        !running -> TextMuted to "Gestoppt"
+        viewerCount == 1 -> Good to "Live, 1 Zuschauer"
+        viewerCount > 1 -> Good to "Live, $viewerCount Zuschauer"
+        AiMotionDetector.isEnabled -> Amber to "Bereit, KI wacht"
+        else -> Amber to "Bereit, Kamera schläft bis jemand zuschaut"
+    }
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Box(Modifier.size(8.dp).background(dot, CircleShape))
+        Text(text, style = MaterialTheme.typography.bodyMedium, color = TextSecondary)
+    }
+}
+
+@Composable
+private fun SectionLabel(text: String) {
+    Text(
+        text,
+        style = MaterialTheme.typography.labelLarge,
+        color = TextPrimary,
+        modifier = Modifier.padding(bottom = 8.dp)
+    )
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MainScreen(
@@ -278,50 +338,119 @@ fun MainScreen(
     onEnterBlackoutMode: () -> Unit
 ) {
     var expanded by remember { mutableStateOf(false) }
+    var showConfigDialog by remember { mutableStateOf(false) }
+    val running by CameraStreamingService.isRunning.collectAsState()
+    val viewerCount by CameraStreamingService.activeViewers.collectAsState()
+    val currentPin by P2pSignalingManager.liveRoomPin.collectAsState()
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val url = "http://$selectedIp:$port"
 
     Column(
         modifier = Modifier
             .fillMaxSize()
+            .safeDrawingPadding()
             .verticalScroll(rememberScrollState())
-            .padding(horizontal = 20.dp, vertical = 24.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Top
+            .padding(horizontal = 24.dp, vertical = 24.dp)
     ) {
-        Text(
-            text = "Camera Live Stream",
-            style = MaterialTheme.typography.headlineMedium,
-            fontWeight = androidx.compose.ui.text.font.FontWeight.Bold
-        )
-        Spacer(modifier = Modifier.height(16.dp))
-        
-        Text(
-            text = "Verbindungseinstellungen:",
-            style = MaterialTheme.typography.titleSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.fillMaxWidth(0.9f)
-        )
-        Spacer(modifier = Modifier.height(6.dp))
-        
+        Text("Phone as Cam", style = MaterialTheme.typography.titleLarge)
+        Spacer(Modifier.height(4.dp))
+        StatusLine(running, viewerCount)
+
+        Spacer(Modifier.height(32.dp))
+
+        // The one rich moment on this screen: what you need to reach this camera.
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .finderCorners(Amber)
+                .padding(20.dp)
+        ) {
+            Text("Im Browser öffnen", style = MaterialTheme.typography.bodySmall, color = TextMuted)
+            Spacer(Modifier.height(4.dp))
+            Text(
+                url,
+                fontFamily = PlexMono,
+                fontWeight = FontWeight.Medium,
+                fontSize = 18.sp,
+                lineHeight = 24.sp,
+                color = TextPrimary,
+                modifier = Modifier.clickable {
+                    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                    clipboard.setPrimaryClip(android.content.ClipData.newPlainText("Stream URL", url))
+                    Toast.makeText(context, "Adresse kopiert", Toast.LENGTH_SHORT).show()
+                }
+            )
+            Spacer(Modifier.height(20.dp))
+            Text("PIN", style = MaterialTheme.typography.bodySmall, color = TextMuted)
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Text(
+                    currentPin,
+                    fontFamily = PlexMono,
+                    fontWeight = FontWeight.Medium,
+                    fontSize = 40.sp,
+                    lineHeight = 48.sp,
+                    letterSpacing = 4.sp,
+                    color = Amber
+                )
+                TextButton(onClick = {
+                    P2pSignalingManager.regeneratePin(context)
+                    Toast.makeText(context, "Neue PIN gilt ab sofort", Toast.LENGTH_SHORT).show()
+                }) {
+                    Text("Neue PIN", color = TextSecondary)
+                }
+            }
+        }
+
+        Spacer(Modifier.height(24.dp))
+
+        if (running) {
+            OutlinedButton(
+                onClick = onStopStream,
+                modifier = Modifier.fillMaxWidth().height(48.dp),
+                shape = MaterialTheme.shapes.small,
+                border = BorderStroke(1.dp, Surface3)
+            ) {
+                Icon(painterResource(R.drawable.ic_square), null, Modifier.size(18.dp), tint = Bad)
+                Spacer(Modifier.width(8.dp))
+                Text("Stream stoppen", color = TextPrimary)
+            }
+        } else {
+            Button(
+                onClick = onStartStream,
+                modifier = Modifier.fillMaxWidth().height(48.dp),
+                shape = MaterialTheme.shapes.small
+            ) {
+                Icon(painterResource(R.drawable.ic_play), null, Modifier.size(18.dp))
+                Spacer(Modifier.width(8.dp))
+                Text("Stream starten")
+            }
+        }
+
+        Spacer(Modifier.height(32.dp))
+        SectionLabel("Verbindung")
+
         ExposedDropdownMenuBox(
             expanded = expanded,
             onExpandedChange = { expanded = !expanded },
-            modifier = Modifier.fillMaxWidth(0.9f)
+            modifier = Modifier.fillMaxWidth()
         ) {
             OutlinedTextField(
                 value = selectedIp,
                 onValueChange = {},
                 readOnly = true,
                 label = { Text("IP-Adresse") },
+                textStyle = LocalTextStyle.current.copy(fontFamily = PlexMono),
                 trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
                 modifier = Modifier.menuAnchor().fillMaxWidth()
             )
-            ExposedDropdownMenu(
-                expanded = expanded,
-                onDismissRequest = { expanded = false }
-            ) {
+            ExposedDropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
                 ipAddresses.forEach { ip ->
                     DropdownMenuItem(
-                        text = { Text(ip) },
+                        text = { Text(ip, fontFamily = PlexMono) },
                         onClick = {
                             onIpSelected(ip)
                             expanded = false
@@ -330,126 +459,54 @@ fun MainScreen(
                 }
             }
         }
-        
-        Spacer(modifier = Modifier.height(10.dp))
-        
+
+        Spacer(Modifier.height(8.dp))
+
         OutlinedTextField(
             value = port,
             onValueChange = onPortChanged,
             label = { Text("Port") },
+            textStyle = LocalTextStyle.current.copy(fontFamily = PlexMono),
+            singleLine = true,
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-            modifier = Modifier.fillMaxWidth(0.9f)
+            modifier = Modifier.fillMaxWidth()
         )
-        
-        Spacer(modifier = Modifier.height(10.dp))
-        
-        OutlinedButton(
-            onClick = onSetAsDefault,
-            modifier = Modifier.fillMaxWidth(0.9f)
-        ) {
-            Text(if (isDefault) "✓ Als Standard gespeichert" else "⭐ Als Standard speichern")
+
+        TextButton(onClick = onSetAsDefault, enabled = !isDefault) {
+            Text(if (isDefault) "Ist als Standard gespeichert" else "Als Standard speichern")
         }
 
-        Spacer(modifier = Modifier.height(10.dp))
+        Spacer(Modifier.height(24.dp))
+        SectionLabel("Mehr")
 
-        var showConfigDialog by remember { mutableStateOf(false) }
-        Button(
-            onClick = { showConfigDialog = true },
-            modifier = Modifier.fillMaxWidth(0.9f),
-            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary)
-        ) {
-            Text("⚙️ KI-Alarm, Webhooks & Cloud")
-        }
+        ListRow("KI-Alarm, Webhooks und Cloud", R.drawable.ic_bell) { showConfigDialog = true }
+        ListRow("Bildschirm abdunkeln", R.drawable.ic_moon, onEnterBlackoutMode)
 
-        Spacer(modifier = Modifier.height(12.dp))
-        
-        Card(
-            modifier = Modifier.fillMaxWidth(0.9f),
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
-        ) {
-            Column(modifier = Modifier.padding(12.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                Text(
-                    text = "🌐 Stream URL:",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                Text(
-                    text = "http://$selectedIp:$port",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.primary
-                )
-            }
-        }
-
-        Spacer(modifier = Modifier.height(12.dp))
-
-        val viewerCount by CameraStreamingService.activeViewers.collectAsState()
-        Card(
-            modifier = Modifier.fillMaxWidth(0.9f),
-            colors = CardDefaults.cardColors(
-                containerColor = if (viewerCount > 0) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant
-            )
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.Center
-            ) {
-                Text(
-                    text = if (viewerCount == 0) "👥 0 Zuschauer (Standby)"
-                           else if (viewerCount == 1) "🟢 👥 1 aktiver Zuschauer"
-                           else "🟢 👥 $viewerCount aktive Zuschauer",
-                    style = MaterialTheme.typography.bodyMedium,
-                    fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
-                    color = if (viewerCount > 0) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-        }
-
-        Spacer(modifier = Modifier.height(16.dp))
-        Row(
-            modifier = Modifier.fillMaxWidth(0.9f),
-            horizontalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
-            Button(
-                onClick = onStartStream,
-                modifier = Modifier.weight(1f)
-            ) {
-                Text("▶ Start")
-            }
-            Button(
-                onClick = onStopStream,
-                modifier = Modifier.weight(1f),
-                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
-            ) {
-                Text("⏹ Stop")
-            }
-        }
-
-        Spacer(modifier = Modifier.height(14.dp))
-
-        FilledTonalButton(
-            onClick = onEnterBlackoutMode,
-            modifier = Modifier.fillMaxWidth(0.9f)
-        ) {
-            Text("🌙 AMOLED Sparmodus (Schwarz)")
-        }
-        
-        Spacer(modifier = Modifier.height(10.dp))
+        Spacer(Modifier.height(16.dp))
         Text(
-            text = "💡 Tipp: Sie können auch einfach den Power-Button drücken. Die Kamera streamt bei ausgeschaltetem Bildschirm weiter.",
+            "Der Stream läuft auch bei ausgeschaltetem Bildschirm weiter, der Power-Button reicht.",
             style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            textAlign = TextAlign.Center,
-            modifier = Modifier.fillMaxWidth(0.9f)
+            color = TextMuted
         )
 
         if (showConfigDialog) {
-            AutomationConfigDialog(
-                onDismiss = { showConfigDialog = false }
-            )
+            AutomationConfigDialog(onDismiss = { showConfigDialog = false })
         }
+    }
+}
+
+@Composable
+private fun ListRow(title: String, icon: Int, onClick: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .height(48.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        Icon(painterResource(icon), null, Modifier.size(18.dp), tint = TextSecondary)
+        Text(title, style = MaterialTheme.typography.bodyMedium, color = TextPrimary)
     }
 }
 
@@ -477,18 +534,18 @@ fun AutomationConfigDialog(
     var aiCooldown by remember { mutableIntStateOf(AiMotionDetector.cooldownSeconds) }
     var aiWebhookAlarm by remember { mutableStateOf(AiMotionDetector.isWebhookAlarmEnabled) }
     var aiAutoClip by remember { mutableStateOf(AiMotionDetector.isAutoClipEnabled) }
+    var aiAutoVideoDrive by remember { mutableStateOf(AiMotionDetector.isAutoVideoDriveEnabled) }
     var aiAutoDrive by remember { mutableStateOf(AiMotionDetector.isAutoDriveEnabled) }
 
     var selectedTab by remember { mutableStateOf(0) }
-    val tabs = listOf("🤖 KI-Alarm", "🔌 Akku-Schutz", "🚨 Webhook", "☁️ Drive")
+    val tabs = listOf("KI-Alarm", "Fernzugriff", "Akku", "Webhook", "Drive")
 
     AlertDialog(
         onDismissRequest = onDismiss,
         title = {
             Text(
-                text = "⚙️ Automatisierung & Cloud",
-                style = MaterialTheme.typography.titleLarge,
-                fontWeight = androidx.compose.ui.text.font.FontWeight.Bold
+                text = "Automatisierung",
+                style = MaterialTheme.typography.titleLarge
             )
         },
         text = {
@@ -505,7 +562,7 @@ fun AutomationConfigDialog(
                         Tab(
                             selected = selectedTab == index,
                             onClick = { selectedTab = index },
-                            text = { Text(title, style = MaterialTheme.typography.bodySmall, fontWeight = androidx.compose.ui.text.font.FontWeight.Bold) }
+                            text = { Text(title, style = MaterialTheme.typography.bodySmall) }
                         )
                     }
                 }
@@ -515,12 +572,11 @@ fun AutomationConfigDialog(
                 when (selectedTab) {
                     0 -> { // AI & Motion Alarm
                         Text(
-                            text = "🤖 KI-Objekterkennung & Alarm",
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = androidx.compose.ui.text.font.FontWeight.Bold
+                            text = "Objekterkennung und Alarm",
+                            style = MaterialTheme.typography.titleMedium
                         )
                         Text(
-                            text = "Erkennt Personen & Objekte lokal auf dem Smartphone (MediaPipe EfficientDet-Lite0). Sendet Webhooks & sichert Aufnahmen automatisch.",
+                            text = "Erkennt Personen und Objekte direkt auf dem Handy, ohne Cloud. Sendet Webhooks und sichert Aufnahmen.",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -531,13 +587,13 @@ fun AutomationConfigDialog(
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.SpaceBetween
                         ) {
-                            Text("KI-Erkennung aktivieren:", style = MaterialTheme.typography.bodyMedium)
+                            Text("KI-Erkennung", style = MaterialTheme.typography.bodyMedium)
                             Switch(checked = aiEnabled, onCheckedChange = { aiEnabled = it })
                         }
 
                         Spacer(modifier = Modifier.height(8.dp))
 
-                        Text("🎯 Ziel-Objekte:", style = MaterialTheme.typography.labelMedium)
+                        Text("Auslöser", style = MaterialTheme.typography.labelMedium)
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -545,33 +601,32 @@ fun AutomationConfigDialog(
                             FilterChip(
                                 selected = aiTargetClass == "person",
                                 onClick = { aiTargetClass = "person" },
-                                label = { Text("🚶 Personen") }
+                                label = { Text("Personen") }
                             )
                             FilterChip(
                                 selected = aiTargetClass == "person_animal",
                                 onClick = { aiTargetClass = "person_animal" },
-                                label = { Text("🐾 + Tiere") }
+                                label = { Text("+ Tiere") }
                             )
                             FilterChip(
                                 selected = aiTargetClass == "all",
                                 onClick = { aiTargetClass = "all" },
-                                label = { Text("🌐 Alle") }
+                                label = { Text("Alle") }
                             )
                         }
 
                         Spacer(modifier = Modifier.height(8.dp))
 
-                        Text("🎯 Mindest-Sicherheit: ${(aiConfidence * 100).toInt()}%", style = MaterialTheme.typography.bodySmall)
+                        Text("Mindest-Sicherheit ${(aiConfidence * 100).toInt()}%", style = MaterialTheme.typography.bodySmall)
                         Slider(
                             value = aiConfidence,
                             onValueChange = { aiConfidence = it },
                             valueRange = 0.30f..0.90f,
                             steps = 11
                         )
-
                         Spacer(modifier = Modifier.height(4.dp))
 
-                        Text("⏱️ Alarm-Pause (Cooldown): ${aiCooldown}s", style = MaterialTheme.typography.bodySmall)
+                        Text("Pause zwischen Alarmen ${aiCooldown}s", style = MaterialTheme.typography.bodySmall)
                         Slider(
                             value = aiCooldown.toFloat(),
                             onValueChange = { aiCooldown = it.toInt() },
@@ -586,7 +641,7 @@ fun AutomationConfigDialog(
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.SpaceBetween
                         ) {
-                            Text("🚨 Webhook-Alarm senden:", style = MaterialTheme.typography.bodySmall)
+                            Text("Webhook senden", style = MaterialTheme.typography.bodySmall)
                             Switch(checked = aiWebhookAlarm, onCheckedChange = { aiWebhookAlarm = it })
                         }
 
@@ -595,7 +650,7 @@ fun AutomationConfigDialog(
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.SpaceBetween
                         ) {
-                            Text("🎥 Auto-Clip aufnehmen (10s):", style = MaterialTheme.typography.bodySmall)
+                            Text("Clip aufnehmen, 10 s", style = MaterialTheme.typography.bodySmall)
                             Switch(checked = aiAutoClip, onCheckedChange = { aiAutoClip = it })
                         }
 
@@ -604,7 +659,16 @@ fun AutomationConfigDialog(
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.SpaceBetween
                         ) {
-                            Text("☁️ In Google Drive sichern:", style = MaterialTheme.typography.bodySmall)
+                            Text("Video in die Cloud", style = MaterialTheme.typography.bodySmall)
+                            Switch(checked = aiAutoVideoDrive, onCheckedChange = { aiAutoVideoDrive = it })
+                        }
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text("Foto in die Cloud", style = MaterialTheme.typography.bodySmall)
                             Switch(checked = aiAutoDrive, onCheckedChange = { aiAutoDrive = it })
                         }
 
@@ -620,14 +684,178 @@ fun AutomationConfigDialog(
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
-                    1 -> { // Smart Plug
+                    1 -> { // P2P Remote Access
                         Text(
-                            text = "24/7 Dauerbetrieb & Akkuschutz",
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = androidx.compose.ui.text.font.FontWeight.Bold
+                            text = "Fernzugriff von überall",
+                            style = MaterialTheme.typography.titleMedium
                         )
                         Text(
-                            text = "Sendet HTTP-Webhooks an Smarthome-Steckdosen (Shelly, Home Assistant, Tasmota), um den Akku zwischen 20% und 80% zu halten.",
+                            text = "Direkter Zugriff über Mobilfunk, ohne Portfreigabe im Router.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Spacer(modifier = Modifier.height(12.dp))
+
+                        val livePin by P2pSignalingManager.liveRoomPin.collectAsState()
+                        val liveRoomId by P2pSignalingManager.liveRoomId.collectAsState()
+                        val autoInterval by P2pSignalingManager.liveAutoRotateInterval.collectAsState()
+
+                        Card(
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+                        ) {
+                            Column(modifier = Modifier.padding(14.dp)) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text("Kamera-ID", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    Text(liveRoomId, fontFamily = PlexMono, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.primary)
+                                }
+                                Spacer(modifier = Modifier.height(8.dp))
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text("PIN", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    Text(
+                                        text = livePin,
+                                        fontFamily = PlexMono,
+                                        style = MaterialTheme.typography.headlineMedium,
+                                        color = MaterialTheme.colorScheme.secondary
+                                    )
+                                }
+                                Spacer(modifier = Modifier.height(6.dp))
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text("Relay", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    val isConn = P2pSignalingManager.isConnected.get()
+                                    Text(if (isConn) "Online" else "Verbinde", style = MaterialTheme.typography.bodySmall)
+                                }
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(10.dp))
+
+                        Text("PIN automatisch wechseln", style = MaterialTheme.typography.labelMedium)
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            FilterChip(
+                                selected = autoInterval == 0,
+                                onClick = { P2pSignalingManager.setAutoRotateInterval(context, 0) },
+                                label = { Text("Aus") }
+                            )
+                            FilterChip(
+                                selected = autoInterval == 15,
+                                onClick = { P2pSignalingManager.setAutoRotateInterval(context, 15) },
+                                label = { Text("15 Min") }
+                            )
+                            FilterChip(
+                                selected = autoInterval == 30,
+                                onClick = { P2pSignalingManager.setAutoRotateInterval(context, 30) },
+                                label = { Text("30 Min") }
+                            )
+                            FilterChip(
+                                selected = autoInterval == 60,
+                                onClick = { P2pSignalingManager.setAutoRotateInterval(context, 60) },
+                                label = { Text("1 Std") }
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.height(8.dp))
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Button(
+                                onClick = {
+                                    val newPin = P2pSignalingManager.regeneratePin(context)
+                                    Toast.makeText(context, "Neue PIN: $newPin", Toast.LENGTH_SHORT).show()
+                                },
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Text("Neue PIN")
+                            }
+                            OutlinedButton(
+                                onClick = {
+                                    val newId = P2pSignalingManager.regenerateRoomId(context)
+                                    Toast.makeText(context, "Neue Kamera-ID und PIN erstellt", Toast.LENGTH_SHORT).show()
+                                },
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Text("Neue ID und PIN")
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(10.dp))
+
+                        val worldwideUrl = "https://theStxve.github.io/phone-as-cam-app/#room=${liveRoomId}"
+
+                        Button(
+                            onClick = {
+                                val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                                val clip = android.content.ClipData.newPlainText("P2P Remote Stream Link", worldwideUrl)
+                                clipboard.setPrimaryClip(clip)
+                                Toast.makeText(context, "Link kopiert", Toast.LENGTH_SHORT).show()
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text("Link für unterwegs kopieren")
+                        }
+
+                        Spacer(modifier = Modifier.height(6.dp))
+
+                        OutlinedButton(
+                            onClick = {
+                                try {
+                                    val intent = Intent(Intent.ACTION_VIEW, android.net.Uri.parse(worldwideUrl))
+                                    context.startActivity(intent)
+                                } catch (e: Exception) {
+                                    Toast.makeText(context, "Browser konnte nicht geöffnet werden", Toast.LENGTH_SHORT).show()
+                                }
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text("Im Browser öffnen")
+                        }
+
+                        Spacer(modifier = Modifier.height(6.dp))
+
+                        OutlinedButton(
+                            onClick = {
+                                val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                                val clip = android.content.ClipData.newPlainText("P2P Remote Info", "Room: ${liveRoomId}, PIN: ${livePin}")
+                                clipboard.setPrimaryClip(clip)
+                                Toast.makeText(context, "Kamera-ID und PIN kopiert", Toast.LENGTH_SHORT).show()
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text("Kamera-ID und PIN kopieren")
+                        }
+
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            text = "Mit jeder neuen PIN werden laufende Verbindungen sofort getrennt.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    2 -> { // Smart Plug
+                        Text(
+                            text = "Dauerbetrieb und Akkuschutz",
+                            style = MaterialTheme.typography.titleMedium
+                        )
+                        Text(
+                            text = "Schaltet eine smarte Steckdose (Shelly, Home Assistant, Tasmota), damit der Akku zwischen 20 und 80 % bleibt.",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -638,7 +866,7 @@ fun AutomationConfigDialog(
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.SpaceBetween
                         ) {
-                            Text("Akkuschutz aktiv (80% / 20%):", style = MaterialTheme.typography.bodyMedium)
+                            Text("Akkuschutz, 20 bis 80 %", style = MaterialTheme.typography.bodyMedium)
                             Switch(checked = batteryProtection, onCheckedChange = { batteryProtection = it })
                         }
 
@@ -647,7 +875,7 @@ fun AutomationConfigDialog(
                         OutlinedTextField(
                             value = plugOffUrl,
                             onValueChange = { plugOffUrl = it },
-                            label = { Text("Smart-Plug AUS URL (bei 80%)") },
+                            label = { Text("URL zum Ausschalten, bei 80 %") },
                             placeholder = { Text("http://192.168.1.50/relay/0?turn=off") },
                             singleLine = true,
                             modifier = Modifier.fillMaxWidth()
@@ -656,11 +884,11 @@ fun AutomationConfigDialog(
                             TextButton(onClick = {
                                 WebhookManager.sendWebhook(plugOffUrl, null) { success, msg ->
                                     android.os.Handler(android.os.Looper.getMainLooper()).post {
-                                        Toast.makeText(context, if (success) "✓ Signal gesendet ($msg)" else "❌ Fehler: $msg", Toast.LENGTH_SHORT).show()
+                                        Toast.makeText(context, if (success) "Signal gesendet ($msg)" else "Fehler: $msg", Toast.LENGTH_SHORT).show()
                                     }
                                 }
                             }) {
-                                Text("⚡ Test AUS")
+                                Text("Ausschalten testen")
                             }
                         }
 
@@ -669,7 +897,7 @@ fun AutomationConfigDialog(
                         OutlinedTextField(
                             value = plugOnUrl,
                             onValueChange = { plugOnUrl = it },
-                            label = { Text("Smart-Plug AN URL (bei 20%)") },
+                            label = { Text("URL zum Einschalten, bei 20 %") },
                             placeholder = { Text("http://192.168.1.50/relay/0?turn=on") },
                             singleLine = true,
                             modifier = Modifier.fillMaxWidth()
@@ -678,31 +906,28 @@ fun AutomationConfigDialog(
                             TextButton(onClick = {
                                 WebhookManager.sendWebhook(plugOnUrl, null) { success, msg ->
                                     android.os.Handler(android.os.Looper.getMainLooper()).post {
-                                        Toast.makeText(context, if (success) "✓ Signal gesendet ($msg)" else "❌ Fehler: $msg", Toast.LENGTH_SHORT).show()
+                                        Toast.makeText(context, if (success) "Signal gesendet ($msg)" else "Fehler: $msg", Toast.LENGTH_SHORT).show()
                                     }
                                 }
                             }) {
-                                Text("⚡ Test AN")
+                                Text("Einschalten testen")
                             }
                         }
 
-                        if (WebhookManager.currentBatteryLevel >= 0) {
-                            Spacer(modifier = Modifier.height(8.dp))
-                            Text(
-                                text = "🔋 Status: ${WebhookManager.currentBatteryLevel}% (${if (WebhookManager.isCurrentlyCharging) "Wird geladen" else "Entlädt"})",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.primary
-                            )
-                        }
-                    }
-                    2 -> { // Alarm Webhooks
+                        Spacer(modifier = Modifier.height(8.dp))
                         Text(
-                            text = "Alarm & Ereignis-Benachrichtigungen",
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = androidx.compose.ui.text.font.FontWeight.Bold
+                            text = "Akku ${WebhookManager.currentBatteryLevel} %, ${if (WebhookManager.isCurrentlyCharging) "lädt" else "entlädt"}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                    3 -> { // Alarm Webhooks
+                        Text(
+                            text = "Alarm-Benachrichtigung",
+                            style = MaterialTheme.typography.titleMedium
                         )
                         Text(
-                            text = "Sendet bei Alarmen sofort eine POST-Nachricht (Discord Webhook, Home Assistant, n8n, etc.).",
+                            text = "Schickt bei jedem Alarm eine Nachricht, etwa an Discord, Home Assistant oder n8n.",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -713,7 +938,7 @@ fun AutomationConfigDialog(
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.SpaceBetween
                         ) {
-                            Text("Alarm-Webhook aktiv:", style = MaterialTheme.typography.bodyMedium)
+                            Text("Alarm-Webhook", style = MaterialTheme.typography.bodyMedium)
                             Switch(checked = alarmEnabled, onCheckedChange = { alarmEnabled = it })
                         }
 
@@ -722,7 +947,7 @@ fun AutomationConfigDialog(
                         OutlinedTextField(
                             value = alarmUrl,
                             onValueChange = { alarmUrl = it },
-                            label = { Text("Webhook URL") },
+                            label = { Text("Webhook-URL") },
                             placeholder = { Text("https://discord.com/api/webhooks/...") },
                             singleLine = true,
                             modifier = Modifier.fillMaxWidth()
@@ -734,22 +959,21 @@ fun AutomationConfigDialog(
                                 WebhookManager.alarmWebhookUrl = alarmUrl
                                 WebhookManager.sendAlarm("Test-Alarm von CameraLive App") { success, msg ->
                                     android.os.Handler(android.os.Looper.getMainLooper()).post {
-                                        Toast.makeText(context, if (success) "✓ Test-Alarm zugestellt!" else "❌ Fehler: $msg", Toast.LENGTH_SHORT).show()
+                                        Toast.makeText(context, if (success) "Test-Alarm zugestellt" else "Fehler: $msg", Toast.LENGTH_SHORT).show()
                                     }
                                 }
                             }) {
-                                Text("⚡ Test-Alarm senden")
+                                Text("Test-Alarm senden")
                             }
                         }
                     }
-                    3 -> { // Google Drive
+                    4 -> { // Google Drive
                         Text(
-                            text = "Google Drive Auto-Backup",
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = androidx.compose.ui.text.font.FontWeight.Bold
+                            text = "Google Drive",
+                            style = MaterialTheme.typography.titleMedium
                         )
                         Text(
-                            text = "Fotos und Event-Aufnahmen automatisch direkt in deinem Google Drive sichern.",
+                            text = "Fotos und Alarm-Aufnahmen automatisch in deinem Drive sichern.",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -762,14 +986,12 @@ fun AutomationConfigDialog(
                             ) {
                                 Column(modifier = Modifier.padding(12.dp)) {
                                     Text(
-                                        text = "🟢 Verbunden:",
-                                        style = MaterialTheme.typography.labelMedium,
-                                        fontWeight = androidx.compose.ui.text.font.FontWeight.Bold
+                                        text = "Verbunden",
+                                        style = MaterialTheme.typography.labelMedium
                                     )
                                     Text(
                                         text = connectedAccount,
-                                        style = MaterialTheme.typography.bodyMedium,
-                                        fontWeight = androidx.compose.ui.text.font.FontWeight.Bold
+                                        style = MaterialTheme.typography.bodyMedium
                                     )
                                     Spacer(modifier = Modifier.height(8.dp))
                                     TextButton(onClick = {
@@ -787,7 +1009,7 @@ fun AutomationConfigDialog(
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.SpaceBetween
                             ) {
-                                Text("📸 Fotos automatisch sichern:", style = MaterialTheme.typography.bodyMedium)
+                                Text("Fotos sichern", style = MaterialTheme.typography.bodyMedium)
                                 Switch(checked = driveEnabled, onCheckedChange = { driveEnabled = it })
                             }
 
@@ -798,7 +1020,7 @@ fun AutomationConfigDialog(
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.SpaceBetween
                             ) {
-                                Text("🎥 Video-Clips sichern:", style = MaterialTheme.typography.bodyMedium)
+                                Text("Clips sichern", style = MaterialTheme.typography.bodyMedium)
                                 Switch(checked = clipEnabled, onCheckedChange = { clipEnabled = it })
                             }
 
@@ -818,14 +1040,14 @@ fun AutomationConfigDialog(
                                     horizontalAlignment = Alignment.CenterHorizontally
                                 ) {
                                     Text(
-                                        text = "⚪ Kein Google Account verbunden",
+                                        text = "Kein Konto verbunden",
                                         style = MaterialTheme.typography.bodyMedium
                                     )
                                     Spacer(modifier = Modifier.height(12.dp))
                                     Button(onClick = {
                                         activity?.startGoogleSignIn()
                                     }) {
-                                        Text("🔗 Google Account verknüpfen")
+                                        Text("Google-Konto verknüpfen")
                                     }
                                 }
                             }
@@ -836,14 +1058,19 @@ fun AutomationConfigDialog(
         },
         confirmButton = {
             Button(onClick = {
+                val videoChanged = AiMotionDetector.isAutoVideoDriveEnabled != aiAutoVideoDrive
                 AiMotionDetector.isEnabled = aiEnabled
                 AiMotionDetector.confidenceThreshold = aiConfidence
                 AiMotionDetector.targetClass = aiTargetClass
                 AiMotionDetector.cooldownSeconds = aiCooldown
                 AiMotionDetector.isWebhookAlarmEnabled = aiWebhookAlarm
                 AiMotionDetector.isAutoClipEnabled = aiAutoClip
+                AiMotionDetector.isAutoVideoDriveEnabled = aiAutoVideoDrive
                 AiMotionDetector.isAutoDriveEnabled = aiAutoDrive
                 AiMotionDetector.save(context)
+
+                // Rebinding interrupts the stream, so only do it when the use cases changed.
+                if (videoChanged) CameraStreamingService.runningInstance?.requestCameraRestart()
 
                 WebhookManager.batteryProtectionEnabled = batteryProtection
                 WebhookManager.plugOffUrl = plugOffUrl
@@ -856,10 +1083,10 @@ fun AutomationConfigDialog(
                 GoogleDriveBackupManager.isClipBackupEnabled = clipEnabled
                 GoogleDriveBackupManager.save(context)
 
-                Toast.makeText(context, "✓ Einstellungen gespeichert", Toast.LENGTH_SHORT).show()
+                Toast.makeText(context, "Gespeichert", Toast.LENGTH_SHORT).show()
                 onDismiss()
             }) {
-                Text("💾 Speichern & Schließen")
+                Text("Speichern")
             }
         },
         dismissButton = {

@@ -14,6 +14,9 @@ android {
         targetSdk = 36
         versionCode = 1
         versionName = "1.0"
+
+        // Local dev only: ./gradlew assembleDebug -PdevAbi=x86_64 builds a slim APK for one ABI
+        (project.findProperty("devAbi") as String?)?.let { ndk { abiFilters += it } }
     }
 
     buildTypes {
@@ -92,6 +95,7 @@ dependencies {
   implementation(libs.androidx.camera.camera2)
   implementation(libs.androidx.camera.lifecycle)
   implementation(libs.androidx.camera.view)
+  implementation(libs.androidx.camera.video)
 
   // NanoHTTPD
   implementation(libs.nanohttpd)
@@ -104,4 +108,7 @@ dependencies {
 
   // MediaPipe AI Object Detection
   implementation(libs.mediapipe.tasks.vision)
+
+  // OkHttp for P2P Remote WebRTC Signaling & Webhooks
+  implementation(libs.okhttp)
 }

@@ -1,0 +1,596 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="theme-color" content="#000000">
+    <title>Phone as Cam Viewer</title>
+    <style>
+        /* Design pass after "unslop" by Damir Sokolovsky (github.com/heydamir/unslop), CC BY 4.0. */
+        @font-face { font-family: "Plex Sans"; src: url(/static/plex-sans-400.woff2) format("woff2"); font-weight: 400; font-display: swap; }
+        @font-face { font-family: "Plex Sans"; src: url(/static/plex-sans-500.woff2) format("woff2"); font-weight: 500; font-display: swap; }
+        @font-face { font-family: "Plex Mono"; src: url(/static/plex-mono-500.woff2) format("woff2"); font-weight: 500; font-display: swap; }
+        :root { --bg: #0f0f10; --surface: #19191b; --raised: #232325; --raised-2: #2c2c2f; --line: rgba(237,237,237,0.08); --text: #ededed; --text-2: #a1a1a6; --text-3: #85858b; --accent: #e8a33d; --on-accent: #1a1204; --good: #4cc38a; --bad: #e5484d; --ease: cubic-bezier(0.2,0,0,1); --mono: "Plex Mono", ui-monospace, Menlo, Consolas, monospace; }
+        * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+        html, body { margin: 0; height: 100%; width: 100%; overflow: hidden; background: #000; color: var(--text); font: 400 14px/20px "Plex Sans", -apple-system, "Segoe UI", Roboto, sans-serif; }
+        button, input { font: inherit; color: inherit; }
+        button { cursor: pointer; }
+        .icon { width: 18px; height: 18px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+        :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+        .stream-container { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; background: #000; }
+        #remoteVideo { width: 100%; height: 100%; object-fit: contain; transition: transform 200ms var(--ease); }
+        #aiOverlay { position: absolute; inset: 0; pointer-events: none; }
+        .top-bar { position: fixed; top: 16px; left: 16px; right: 16px; z-index: 100; display: flex; justify-content: space-between; gap: 8px; }
+        .chip { display: flex; align-items: center; gap: 8px; height: 32px; padding: 0 12px; border-radius: 8px; background: rgba(15,15,16,0.82); border: 1px solid var(--line); font-size: 13px; white-space: nowrap; }
+        .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text-3); flex: none; }
+        .dot.live { background: var(--good); }
+        .dot.warn { background: var(--accent); }
+        .dot.error { background: var(--bad); }
+        .chip-btn { color: var(--text-2); transition: color 120ms var(--ease); }
+        .chip-btn:hover { color: var(--text); }
+        .chip-btn .icon { width: 16px; height: 16px; }
+        .controls-bar { position: fixed; z-index: 100; left: 50%; bottom: 16px; transform: translateX(-50%); display: flex; gap: 4px; padding: 4px; border-radius: 14px; background: rgba(25,25,27,0.92); border: 1px solid var(--line); max-width: calc(100vw - 32px); }
+        .dock-btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; height: 40px; min-width: 40px; padding: 0 12px; border: 0; border-radius: 10px; background: transparent; color: var(--text-2); font-size: 13px; white-space: nowrap; transition: background-color 120ms var(--ease), color 120ms var(--ease), transform 80ms var(--ease); }
+        .dock-btn:hover { background: var(--raised); color: var(--text); }
+        .dock-btn:active { transform: scale(0.97); }
+        .dock-btn.primary { background: var(--text); color: #141415; }
+        .dock-btn.primary:hover { background: #fff; color: #141415; }
+        .dock-btn.active { background: var(--raised-2); color: var(--accent); }
+        .dock-btn.alert.active { background: var(--bad); color: #fff; }
+        @media (max-width: 960px) { .btn-label { display: none; } .dock-btn { width: 44px; height: 44px; padding: 0; } }
+        @media (max-width: 600px) { .controls-bar { left: 0; right: 0; bottom: 0; transform: none; max-width: none; border-radius: 0; border-width: 1px 0 0; padding: 4px 8px calc(4px + env(safe-area-inset-bottom)); overflow-x: auto; scrollbar-width: none; } .dock-btn { flex: none; } }
+        .drawer { position: fixed; z-index: 200; top: 16px; right: 16px; bottom: 16px; width: 340px; display: flex; flex-direction: column; border-radius: 16px; background: var(--surface); border: 1px solid var(--line); opacity: 0; transform: translateY(4px); pointer-events: none; transition: opacity 180ms var(--ease), transform 180ms var(--ease); }
+        .drawer.open { opacity: 1; transform: none; pointer-events: auto; }
+        .drawer-header { display: flex; align-items: center; justify-content: space-between; height: 56px; padding: 0 12px 0 20px; border-bottom: 1px solid var(--line); flex: none; }
+        .drawer-header h2 { margin: 0; font-size: 15px; font-weight: 500; }
+        .drawer-body { overflow-y: auto; padding: 0 20px 24px; }
+        @media (max-width: 600px) { .drawer { top: auto; left: 0; right: 0; bottom: 0; width: auto; max-height: 84vh; border-radius: 16px 16px 0 0; border-width: 1px 0 0; } }
+        .section { padding-top: 24px; }
+        .section + .section { margin-top: 24px; border-top: 1px solid var(--line); }
+        .section-label { margin: 0 0 12px; font-size: 13px; font-weight: 500; }
+        .row { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 36px; font-size: 13px; color: var(--text-2); }
+        .row .value { color: var(--text); text-align: right; min-width: 0; overflow-wrap: anywhere; }
+        .slider-row { display: grid; grid-template-columns: 1fr auto; gap: 4px 12px; align-items: center; padding: 8px 0; font-size: 13px; color: var(--text-2); }
+        .slider-row input { grid-column: 1 / -1; width: 100%; }
+        .val-badge { font-family: var(--mono); font-size: 12px; color: var(--text); font-variant-numeric: tabular-nums; }
+        input[type=range] { -webkit-appearance: none; appearance: none; height: 24px; background: transparent; cursor: pointer; }
+        input[type=range]::-webkit-slider-runnable-track { height: 4px; border-radius: 2px; background: var(--raised-2); }
+        input[type=range]::-moz-range-track { height: 4px; border-radius: 2px; background: var(--raised-2); }
+        input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 16px; height: 16px; margin-top: -6px; border-radius: 50%; background: var(--text); }
+        input[type=range]::-moz-range-thumb { width: 16px; height: 16px; border: 0; border-radius: 50%; background: var(--text); }
+        input[type=checkbox] { -webkit-appearance: none; appearance: none; position: relative; width: 32px; height: 20px; margin: 0; flex: none; border-radius: 10px; background: var(--raised-2); cursor: pointer; transition: background-color 120ms var(--ease); }
+        input[type=checkbox]::after { content: ""; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: var(--text-2); transition: transform 120ms var(--ease), background-color 120ms var(--ease); }
+        input[type=checkbox]:checked { background: var(--accent); }
+        input[type=checkbox]:checked::after { transform: translateX(12px); background: var(--on-accent); }
+        .segmented { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; gap: 2px; padding: 2px; margin: 4px 0 8px; border-radius: 10px; background: var(--bg); }
+        .btn-preset { height: 32px; border: 0; border-radius: 8px; background: transparent; color: var(--text-2); font-size: 12px; transition: background-color 120ms var(--ease), color 120ms var(--ease); }
+        .btn-preset:hover { color: var(--text); }
+        .btn-preset.active { background: var(--raised-2); color: var(--text); }
+        .icon-btn { width: 32px; height: 32px; display: inline-flex; align-items: center; justify-content: center; padding: 0; border: 0; border-radius: 8px; background: transparent; color: var(--text-3); }
+        .icon-btn:hover { background: var(--raised); color: var(--text); }
+        .btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; width: 100%; height: 36px; border: 1px solid var(--line); border-radius: 8px; background: var(--raised); font-size: 13px; }
+        .btn:hover { background: var(--raised-2); }
+        .finder { --c: var(--text-3); background: linear-gradient(var(--c),var(--c)) top left/12px 1.5px, linear-gradient(var(--c),var(--c)) top left/1.5px 12px, linear-gradient(var(--c),var(--c)) top right/12px 1.5px, linear-gradient(var(--c),var(--c)) top right/1.5px 12px, linear-gradient(var(--c),var(--c)) bottom left/12px 1.5px, linear-gradient(var(--c),var(--c)) bottom left/1.5px 12px, linear-gradient(var(--c),var(--c)) bottom right/12px 1.5px, linear-gradient(var(--c),var(--c)) bottom right/1.5px 12px; background-repeat: no-repeat; }
+        .ai-detect-box { position: absolute; --c: rgba(237,237,237,0.8); }
+        .ai-detect-box.person { --c: var(--accent); }
+        .ai-detect-label { position: absolute; top: -24px; left: 0; padding: 0 6px; height: 20px; line-height: 20px; font: 500 12px/20px var(--mono); white-space: nowrap; background: var(--c); color: #141415; }
+        .security-overlay { position: fixed; inset: 0; z-index: 1000; display: flex; align-items: center; justify-content: center; padding: 16px; background: var(--bg); }
+        .security-overlay.hidden { display: none; }
+        .security-card { width: 360px; max-width: 100%; padding: 32px; }
+        .security-card.finder { --c: var(--accent); }
+        .security-title { margin: 0 0 4px; font-size: 20px; line-height: 28px; font-weight: 500; }
+        .security-subtitle { margin: 0 0 24px; font-size: 13px; color: var(--text-2); }
+        .form-group { margin-bottom: 16px; }
+        .form-label { display: block; margin-bottom: 4px; font-size: 13px; color: var(--text-2); }
+        .input-field { width: 100%; height: 44px; padding: 0 12px; border-radius: 8px; background: var(--raised); border: 1px solid var(--line); font-family: var(--mono); }
+        .input-pin { font-size: 20px; letter-spacing: 0.2em; }
+        .btn-unlock { width: 100%; height: 44px; border: 0; border-radius: 8px; background: var(--text); color: #141415; font-weight: 500; transition: background-color 120ms var(--ease); }
+        .btn-unlock:hover { background: #fff; }
+        .btn-unlock:disabled { opacity: 0.6; cursor: progress; }
+        .error-banner { display: none; margin-top: 16px; font-size: 13px; color: var(--bad); }
+        .error-banner.show { display: block; }
+        .security-footer { margin-top: 24px; font-size: 12px; line-height: 16px; color: var(--text-3); }
+        .shake { animation: shake 240ms var(--ease); }
+        @keyframes shake { 25% { transform: translateX(-4px); } 75% { transform: translateX(4px); } }
+        .toast { position: fixed; top: 16px; left: 50%; z-index: 2000; padding: 8px 16px; border-radius: 8px; background: var(--text); color: #141415; font-size: 13px; opacity: 0; transform: translate(-50%,-4px); pointer-events: none; transition: opacity 160ms var(--ease), transform 160ms var(--ease); }
+        .toast.show { opacity: 1; transform: translate(-50%,0); }
+        .mono { font-family: var(--mono); }
+        @media (prefers-reduced-motion: reduce) { * { transition-duration: 0ms !important; animation: none !important; } }
+    </style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><symbol id="i-camera" viewBox="0 0 24 24"><path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z" /> <circle cx="12" cy="13" r="3" /></symbol><symbol id="i-flashlight" viewBox="0 0 24 24"><path d="M18 6c0 2-2 2-2 4v10a2 2 0 0 1-2 2h-4a2 2 0 0 1-2-2V10c0-2-2-2-2-4V2h12z" /> <line x1="6" x2="18" y1="6" y2="6" /> <line x1="12" x2="12" y1="12" y2="12" /></symbol><symbol id="i-lock" viewBox="0 0 24 24"><rect width="18" height="11" x="3" y="11" rx="2" ry="2" /> <path d="M7 11V7a5 5 0 0 1 10 0v4" /></symbol><symbol id="i-moon" viewBox="0 0 24 24"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z" /></symbol><symbol id="i-rotate-ccw" viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" /> <path d="M3 3v5h5" /></symbol><symbol id="i-scan" viewBox="0 0 24 24"><path d="M3 7V5a2 2 0 0 1 2-2h2" /> <path d="M17 3h2a2 2 0 0 1 2 2v2" /> <path d="M21 17v2a2 2 0 0 1-2 2h-2" /> <path d="M7 21H5a2 2 0 0 1-2-2v-2" /></symbol><symbol id="i-siren" viewBox="0 0 24 24"><path d="M7 18v-6a5 5 0 1 1 10 0v6" /> <path d="M5 21a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-1a2 2 0 0 0-2-2H7a2 2 0 0 0-2 2z" /> <path d="M21 12h1" /> <path d="M18.5 4.5 18 5" /> <path d="M2 12h1" /> <path d="M12 2v1" /> <path d="m4.929 4.929.707.707" /> <path d="M12 12v6" /></symbol><symbol id="i-sliders-horizontal" viewBox="0 0 24 24"><line x1="21" x2="14" y1="4" y2="4" /> <line x1="10" x2="3" y1="4" y2="4" /> <line x1="21" x2="12" y1="12" y2="12" /> <line x1="8" x2="3" y1="12" y2="12" /> <line x1="21" x2="16" y1="20" y2="20" /> <line x1="12" x2="3" y1="20" y2="20" /> <line x1="14" x2="14" y1="2" y2="6" /> <line x1="8" x2="8" y1="10" y2="14" /> <line x1="16" x2="16" y1="18" y2="22" /></symbol><symbol id="i-switch-camera" viewBox="0 0 24 24"><path d="M11 19H4a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h5" /> <path d="M13 5h7a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2h-5" /> <circle cx="12" cy="12" r="3" /> <path d="m18 22-3-3 3-3" /> <path d="m6 2 3 3-3 3" /></symbol><symbol id="i-volume-2" viewBox="0 0 24 24"><path d="M11 4.702a.705.705 0 0 0-1.203-.498L6.413 7.587A1.4 1.4 0 0 1 5.416 8H3a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2.416a1.4 1.4 0 0 1 .997.413l3.383 3.384A.705.705 0 0 0 11 19.298z" /> <path d="M16 9a5 5 0 0 1 0 6" /> <path d="M19.364 18.364a9 9 0 0 0 0-12.728" /></symbol><symbol id="i-volume-x" viewBox="0 0 24 24"><path d="M11 4.702a.705.705 0 0 0-1.203-.498L6.413 7.587A1.4 1.4 0 0 1 5.416 8H3a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2.416a1.4 1.4 0 0 1 .997.413l3.383 3.384A.705.705 0 0 0 11 19.298z" /> <line x1="22" x2="16" y1="9" y2="15" /> <line x1="16" x2="22" y1="9" y2="15" /></symbol><symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6 6 18" /> <path d="m6 6 12 12" /></symbol></svg>
+    <div id="toast" class="toast" role="status"></div>
+
+    <div class="security-overlay" id="securityOverlay">
+        <div class="security-card finder" id="securityCard">
+            <h1 class="security-title">Phone as Cam</h1>
+            <p class="security-subtitle">Kein Bild ohne gültige PIN</p>
+            <form onsubmit="handleSecuritySubmit(event)">
+                <div class="form-group">
+                    <label class="form-label" for="gateRoomId">Kamera-ID</label>
+                    <input type="text" id="gateRoomId" class="input-field" placeholder="cam-a1b2c3" autocomplete="off" required>
+                </div>
+                <div class="form-group">
+                    <label class="form-label" for="gatePin">PIN</label>
+                    <input type="password" id="gatePin" class="input-field input-pin" autocomplete="off" autofocus required inputmode="numeric">
+                </div>
+                <button type="submit" class="btn-unlock" id="gateSubmitBtn">Verbinden</button>
+            </form>
+            <div class="error-banner" id="gateErrorBanner" role="alert"></div>
+            <div class="security-footer">Die aktuelle PIN steht in der App auf dem Kamera-Handy</div>
+        </div>
+    </div>
+
+    <div class="stream-container" id="streamContainer">
+        <video id="remoteVideo" autoplay playsinline muted></video>
+        <div id="aiOverlay"></div>
+    </div>
+
+    <div class="top-bar">
+        <div class="chip" id="statusBadge"><span class="dot" id="statusDot"></span><span id="statusText">Gesperrt</span></div>
+        <button class="chip chip-btn" onclick="lockStream()"><svg class="icon"><use href="#i-lock"/></svg>Sperren</button>
+    </div>
+
+    <div class="controls-bar">
+        <button class="dock-btn primary" onclick="takeSnapshot()" title="Aktuelles Bild speichern"><svg class="icon"><use href="#i-camera"/></svg><span class="btn-label">Bild</span></button>
+        <button class="dock-btn" id="captureBtn" onclick="capturePhoto()" title="HD-Foto mit voller Sensorauflösung"><svg class="icon"><use href="#i-scan"/></svg><span class="btn-label">HD-Foto</span></button>
+        <button class="dock-btn" id="audioBtn" onclick="toggleAudio()" title="Ton anhören"><svg class="icon"><use href="#i-volume-x"/></svg><span class="btn-label">Ton</span></button>
+        <button class="dock-btn alert" id="sirenBtn" onclick="toggleSiren()" title="Sirene"><svg class="icon"><use href="#i-siren"/></svg><span class="btn-label">Sirene</span></button>
+        <button class="dock-btn" id="flashBtn" onclick="toggleFlash()" title="Taschenlampe"><svg class="icon"><use href="#i-flashlight"/></svg><span class="btn-label">Licht</span></button>
+        <button class="dock-btn" id="wideBtn" onclick="toggleWide()" title="Weitwinkel"><svg class="icon"><use href="#i-scan"/></svg><span class="btn-label">Weitwinkel</span></button>
+        <button class="dock-btn" id="switchBtn" onclick="switchCamera()" title="Kamera wechseln"><svg class="icon"><use href="#i-switch-camera"/></svg><span class="btn-label">Wechseln</span></button>
+        <button class="dock-btn" id="nightBtn" onclick="toggleNight()" title="Nachtmodus"><svg class="icon"><use href="#i-moon"/></svg><span class="btn-label">Nacht</span></button>
+        <button class="dock-btn" onclick="rotateStream()" title="Bild um 90° drehen"><svg class="icon"><use href="#i-rotate-ccw"/></svg><span class="btn-label">Drehen</span></button>
+        <button class="dock-btn" onclick="toggleDrawer()" title="Einstellungen"><svg class="icon"><use href="#i-sliders-horizontal"/></svg><span class="btn-label">Einstellungen</span></button>
+    </div>
+
+    <aside class="drawer" id="settingsDrawer" aria-label="Einstellungen">
+        <div class="drawer-header">
+            <h2>Einstellungen</h2>
+            <button class="icon-btn" onclick="toggleDrawer()" aria-label="Schließen"><svg class="icon"><use href="#i-x"/></svg></button>
+        </div>
+        <div class="drawer-body">
+            <section class="section">
+                <h3 class="section-label">KI-Erkennung</h3>
+                <label class="row"><span>Aktiv</span><input type="checkbox" id="aiEnabledCheck" onchange="onAiToggle(this.checked)"></label>
+                <div class="row"><span>Status</span><span class="value" id="aiStatus">&mdash;</span></div>
+                <div class="row"><span>Letzter Alarm</span><span class="value mono" id="aiAlarm"></span></div>
+            </section>
+            <section class="section">
+                <h3 class="section-label">Zoom</h3>
+                <label class="slider-row"><span>Faktor</span><span class="val-badge" id="zoomVal">1.0x</span><input type="range" id="zoomSlider" min="1.0" max="5.0" step="0.1" value="1.0" oninput="onZoomInput(this.value)" onchange="sendZoom(this.value)"></label>
+                <div class="segmented">
+                    <button class="btn-preset active" id="z1" onclick="setZoomPreset(1.0)">1x</button>
+                    <button class="btn-preset" id="z2" onclick="setZoomPreset(2.0)">2x</button>
+                    <button class="btn-preset" id="z3" onclick="setZoomPreset(3.0)">3x</button>
+                    <button class="btn-preset" id="z5" onclick="setZoomPreset(5.0)">5x</button>
+                </div>
+            </section>
+            <section class="section">
+                <h3 class="section-label">Belichtung</h3>
+                <label class="slider-row"><span>Korrektur</span><span class="val-badge" id="evVal">0.0 EV</span><input type="range" id="evSlider" min="-4" max="4" step="1" value="0" oninput="onEvInput(this.value)" onchange="sendEv(this.value)"></label>
+                <div class="segmented">
+                    <button class="btn-preset" onclick="setEvPreset(-2)">Dunkler</button>
+                    <button class="btn-preset" onclick="setEvPreset(0)">Auto</button>
+                    <button class="btn-preset" onclick="setEvPreset(2)">Heller</button>
+                </div>
+            </section>
+            <section class="section">
+                <h3 class="section-label">Audio</h3>
+                <label class="slider-row"><span>Verstärkung</span><span class="val-badge" id="volVal">250%</span><input type="range" id="volSlider" min="0" max="300" step="10" value="250" oninput="onVolChange(this.value)"></label>
+            </section>
+            <section class="section">
+                <button class="btn" onclick="lockStream()"><svg class="icon"><use href="#i-lock"/></svg>Stream sperren</button>
+            </section>
+        </div>
+    </aside>
+
+    <script>
+        try { localStorage.removeItem('cam_pin'); } catch(e){}
+
+        const videoEl      = document.getElementById('remoteVideo');
+        const statusDot    = document.getElementById('statusDot');
+        const statusText   = document.getElementById('statusText');
+        const sirenBtn     = document.getElementById('sirenBtn');
+        const flashBtn     = document.getElementById('flashBtn');
+        const wideBtn      = document.getElementById('wideBtn');
+        const switchBtn    = document.getElementById('switchBtn');
+        const nightBtn     = document.getElementById('nightBtn');
+        const audioBtn     = document.getElementById('audioBtn');
+        const securityOverlay = document.getElementById('securityOverlay');
+        const securityCard    = document.getElementById('securityCard');
+        const gateRoomIdInput = document.getElementById('gateRoomId');
+        const gatePinInput    = document.getElementById('gatePin');
+        const gateErrorBanner = document.getElementById('gateErrorBanner');
+        const gateSubmitBtn   = document.getElementById('gateSubmitBtn');
+
+        const hashParams  = new URLSearchParams(window.location.hash.replace('#', '?'));
+        const queryParams = new URLSearchParams(window.location.search);
+        let targetRoomId  = hashParams.get('room') || queryParams.get('room') || '{{room}}';
+        let targetPin     = '';
+
+        gateRoomIdInput.value = targetRoomId;
+        gatePinInput.value    = '';
+
+        let pc = null, ws = null, dataChannel = null;
+        let isSirenActive = false, isFlashActive = false, isWideActive = false, isNightActive = false, isAiEnabled = false;
+        let currentRotation = 0, isAudioMuted = true;
+        let audioCtx = null, gainNode = null;
+        let myViewerId     = 'vwr-' + Math.random().toString(36).substring(2, 9);
+        let currentSessionId = 'sess_' + Date.now();
+        let reconnectTimeout = null, pingTimer = null, statePoller = null, boxPoller = null;
+        let pendingCandidates = [], isRemoteDescSet = false, isAuthenticated = false, answerTimer = null;
+
+        function showToast(msg) {
+            const t = document.getElementById('toast');
+            t.textContent = msg;
+            t.classList.add('show');
+            setTimeout(() => t.classList.remove('show'), 2500);
+        }
+        function updateStatus(text, state) {
+            statusText.textContent = text;
+            statusDot.className = 'dot ' + (state || '');
+        }
+        function toggleDrawer() {
+            document.getElementById('settingsDrawer').classList.toggle('open');
+        }
+
+        // ---------- Security Gate ----------
+        function showSecurityGate(errorMsg = '') {
+            isAuthenticated = false;
+            stopPollers();
+            securityOverlay.classList.remove('hidden');
+            if (errorMsg) {
+                gateErrorBanner.textContent = errorMsg;
+                gateErrorBanner.classList.add('show');
+                securityCard.classList.remove('shake');
+                void securityCard.offsetWidth;
+                securityCard.classList.add('shake');
+                gatePinInput.value = '';
+                gatePinInput.focus();
+            } else {
+                gateErrorBanner.classList.remove('show');
+                gatePinInput.focus();
+            }
+            gateSubmitBtn.disabled = false;
+            gateSubmitBtn.textContent = 'Verbinden';
+            updateStatus('Gesperrt', 'error');
+            if (videoEl.srcObject) { try { videoEl.srcObject.getTracks().forEach(t => t.stop()); } catch(e){} videoEl.srcObject = null; }
+            if (ws) { try { ws.close(); } catch(e){} ws = null; }
+            if (pc) { try { pc.close(); } catch(e){} pc = null; }
+        }
+        function hideSecurityGate() {
+            isAuthenticated = true;
+            securityOverlay.classList.add('hidden');
+            gateErrorBanner.classList.remove('show');
+            startPollers();
+        }
+        function lockStream() {
+            clearTimeout(answerTimer);
+            targetPin = '';
+            gatePinInput.value = '';
+            document.getElementById('settingsDrawer').classList.remove('open');
+            showSecurityGate('Stream gesperrt');
+        }
+        function handleSecuritySubmit(e) {
+            e.preventDefault();
+            const rId = gateRoomIdInput.value.trim();
+            const pin = gatePinInput.value.trim();
+            if (!rId) { showSecurityGate('Kamera-ID fehlt'); return; }
+            if (!pin) { showSecurityGate('PIN fehlt'); return; }
+            targetRoomId = rId; targetPin = pin;
+            gateSubmitBtn.disabled = true;
+            gateSubmitBtn.textContent = 'Verbinde';
+            gateErrorBanner.classList.remove('show');
+            startP2pConnection();
+        }
+
+        // ---------- Pollers ----------
+        function startPollers() {
+            stopPollers();
+            statePoller = setInterval(() => {
+                if (!document.hidden && dataChannel && dataChannel.readyState === 'open') sendControl('get_state');
+            }, 4000);
+            boxPoller = setInterval(() => {
+                if (!document.hidden && isAiEnabled && dataChannel && dataChannel.readyState === 'open') sendControl('get_boxes');
+            }, 500);
+        }
+        function stopPollers() {
+            if (statePoller) { clearInterval(statePoller); statePoller = null; }
+            if (boxPoller)   { clearInterval(boxPoller);   boxPoller = null; }
+        }
+
+        function setAiBadge(enabled) {
+            isAiEnabled = enabled;
+            const box = document.getElementById('aiEnabledCheck');
+            if (box) box.checked = enabled;
+            if (!enabled) drawAiBoxes([]);
+        }
+
+        function drawAiBoxes(boxes) {
+            const overlay = document.getElementById('aiOverlay');
+            overlay.innerHTML = '';
+            if (!boxes || !boxes.length) return;
+            const vw = videoEl.videoWidth  || videoEl.clientWidth;
+            const vh = videoEl.videoHeight || videoEl.clientHeight;
+            const dw = videoEl.clientWidth;
+            const dh = videoEl.clientHeight;
+            const scale = Math.min(dw / vw, dh / vh);
+            const offX  = (dw - vw * scale) / 2;
+            const offY  = (dh - vh * scale) / 2;
+            boxes.forEach(b => {
+                const div = document.createElement('div');
+                div.className = 'ai-detect-box finder';
+                if ((b.label || '').toLowerCase() === 'person') div.classList.add('person');
+                div.style.left   = (offX + b.left   * vw * scale) + 'px';
+                div.style.top    = (offY + b.top     * vh * scale) + 'px';
+                div.style.width  = ((b.right - b.left) * vw * scale) + 'px';
+                div.style.height = ((b.bottom - b.top) * vh * scale) + 'px';
+                const lbl = document.createElement('div');
+                lbl.className   = 'ai-detect-label';
+                lbl.textContent = b.label + ' ' + b.score + '%';
+                div.appendChild(lbl);
+                overlay.appendChild(div);
+            });
+        }
+
+        // ---------- P2P Connection ----------
+        function startP2pConnection() {
+            if (reconnectTimeout) clearTimeout(reconnectTimeout);
+            if (pingTimer) clearInterval(pingTimer);
+            if (ws) { try { ws.close(); } catch(e){} }
+            if (pc) { try { pc.close(); } catch(e){} }
+            pendingCandidates = []; isRemoteDescSet = false;
+            currentSessionId = 'sess_' + Date.now();
+            if (!targetRoomId || !targetPin) { showSecurityGate(); return; }
+            updateStatus('Verbinde', '');
+            // The broker token only identifies this viewer. The PIN is not part of the connection URL.
+            const wsUrl = 'wss://0.peerjs.com/peerjs?key=peerjs&id=' + myViewerId + '&token=' + encodeURIComponent(myViewerId);
+            ws = new WebSocket(wsUrl);
+            ws.onopen = () => {
+                updateStatus('Rufe ' + targetRoomId, '');
+                initWebRtc();
+                pingTimer = setInterval(() => { if (ws && ws.readyState === WebSocket.OPEN) { try { ws.send(JSON.stringify({ type: 'PING' })); } catch(e){} } }, 15000);
+            };
+            ws.onmessage = async (event) => {
+                try {
+                    const msg = JSON.parse(event.data);
+                    if (msg.type === 'OPEN') {
+                        sendOffer();
+                    } else if (msg.type === 'ANSWER') {
+                        const payload = msg.payload || {};
+                        clearTimeout(answerTimer);
+                        const sdpObj  = payload.sdp || payload;
+                        const answerSdp = sdpObj.sdp || sdpObj;
+                        if (answerSdp && pc) {
+                            await pc.setRemoteDescription(new RTCSessionDescription({ type: 'answer', sdp: answerSdp }));
+                            isRemoteDescSet = true;
+                            hideSecurityGate();
+                            while (pendingCandidates.length > 0) {
+                                const cand = pendingCandidates.shift();
+                                try { await pc.addIceCandidate(new RTCIceCandidate(cand)); } catch(err) {}
+                            }
+                        }
+                    } else if (msg.type === 'CANDIDATE') {
+                        const payload = msg.payload || {};
+                        const candObj = payload.candidate || payload;
+                        const candSdp = candObj.candidate;
+                        if (candSdp && pc) {
+                            const candInit = { candidate: candSdp, sdpMid: candObj.sdpMid != null ? candObj.sdpMid.toString() : '0', sdpMLineIndex: candObj.sdpMLineIndex != null ? parseInt(candObj.sdpMLineIndex) : 0 };
+                            if (isRemoteDescSet && pc.remoteDescription) {
+                                try { await pc.addIceCandidate(new RTCIceCandidate(candInit)); } catch(e) {}
+                            } else { pendingCandidates.push(candInit); }
+                        }
+                    } else if (msg.type === 'ERROR') {
+                        showSecurityGate(msg.payload?.msg || 'PIN ungültig');
+                    } else if (msg.type === 'EXPIRE') {
+                        clearTimeout(answerTimer);
+                        showSecurityGate('Kamera nicht erreichbar. Läuft der Stream, stimmt die Kamera-ID?');
+                    } else if (msg.type === 'PING') {
+                        ws.send(JSON.stringify({ type: 'PONG' }));
+                    }
+                } catch (e) { console.error('Signaling error', e); }
+            };
+            ws.onclose = () => {
+                if (pingTimer) clearInterval(pingTimer);
+                if (isAuthenticated && (!pc || (pc.iceConnectionState !== 'connected' && pc.iceConnectionState !== 'completed'))) {
+                    updateStatus('Verbindung wird wiederhergestellt', 'warn');
+                    reconnectTimeout = setTimeout(startP2pConnection, 4000);
+                }
+            };
+            ws.onerror = () => { if (!isAuthenticated) showSecurityGate('Relay nicht erreichbar'); };
+        }
+
+        function initWebRtc() {
+            const config = {
+                iceServers: [
+                    { urls: 'stun:stun.cloudflare.com:3478' }, { urls: 'stun:stun.l.google.com:19302' },
+                    { urls: 'stun:stun.syncthing.net:3478' }
+                ]
+            };
+            pc = new RTCPeerConnection(config);
+            pc.addTransceiver('video', { direction: 'recvonly' });
+            pc.addTransceiver('audio', { direction: 'recvonly' });
+            dataChannel = pc.createDataChannel('camera_controls', { ordered: true });
+            setupDataChannel(dataChannel);
+            pc.onicecandidate = (e) => {
+                if (e.candidate && ws && ws.readyState === WebSocket.OPEN) {
+                    ws.send(JSON.stringify({ type: 'CANDIDATE', src: myViewerId, dst: targetRoomId, token: targetPin,
+                        payload: { type: 'media', connectionId: currentSessionId, token: targetPin,
+                            candidate: { candidate: e.candidate.candidate, sdpMid: e.candidate.sdpMid, sdpMLineIndex: e.candidate.sdpMLineIndex } } }));
+                }
+            };
+            pc.oniceconnectionstatechange = () => {
+                if (pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed') {
+                    hideSecurityGate(); updateStatus('Live', 'live');
+                } else if (pc.iceConnectionState === 'failed' || pc.iceConnectionState === 'disconnected') {
+                    if (isAuthenticated) { updateStatus('Verbindung wird wiederhergestellt', 'warn'); reconnectTimeout = setTimeout(startP2pConnection, 3000); }
+                }
+            };
+            pc.ontrack = (event) => {
+                if (!videoEl.srcObject) videoEl.srcObject = new MediaStream();
+                videoEl.srcObject.addTrack(event.track);
+                if (event.track.kind === 'video') { videoEl.muted = true; videoEl.play().catch(() => {}); }
+                else if (event.track.kind === 'audio') setupWebAudio(videoEl.srcObject);
+            };
+        }
+
+        function setupDataChannel(channel) {
+            channel.onopen = () => { sendControl('set_audio', { enabled: !isAudioMuted }); sendControl('get_state'); };
+            channel.onmessage = (e) => {
+                try {
+                    const d = JSON.parse(e.data);
+                    if (d.type === 'state_update') {
+                        if (d.flashlight !== undefined) { isFlashActive = d.flashlight; flashBtn.classList.toggle('active', isFlashActive); }
+                        if (d.wideAngle  !== undefined) { isWideActive  = d.wideAngle;  wideBtn.classList.toggle('active',  isWideActive);  }
+                        if (d.siren      !== undefined) { isSirenActive = d.siren;      sirenBtn.classList.toggle('active', isSirenActive); }
+                        if (d.zoom     !== undefined) { document.getElementById('zoomSlider').value = d.zoom; onZoomInput(d.zoom); }
+                        if (d.exposure !== undefined) { document.getElementById('evSlider').value = d.exposure; onEvInput(d.exposure); }
+                        if (d.facing   !== undefined) { switchBtn.title = d.facing === 'front' ? 'Frontkamera aktiv' : 'Rückkamera aktiv'; }
+                        if (d.aiEnabled !== undefined) {
+                            setAiBadge(d.aiEnabled);
+                        }
+                        if (d.nightBoost !== undefined) { isNightActive = d.nightBoost; nightBtn.classList.toggle('active', isNightActive); }
+                        if (d.aiStatus    !== undefined) document.getElementById('aiStatus').textContent = d.aiStatus || '\u2014';
+                        if (d.aiLastAlarm !== undefined) document.getElementById('aiAlarm').textContent  = d.aiLastAlarm || '';
+                    } else if (d.type === 'ai_boxes') {
+                        drawAiBoxes(d.boxes);
+                    } else if (d.type === 'error') {
+                        showToast(d.message || 'Nicht autorisiert');
+                    }
+                } catch(err) {}
+            };
+            channel.onclose = () => {};
+        }
+
+        async function sendOffer() {
+            if (!pc) return;
+            try {
+                const offer = await pc.createOffer({ offerToReceiveVideo: true, offerToReceiveAudio: true });
+                await pc.setLocalDescription(offer);
+                ws.send(JSON.stringify({ type: 'OFFER', src: myViewerId, dst: targetRoomId, token: targetPin,
+                    payload: { type: 'media', connectionId: currentSessionId, token: targetPin,
+                        sdp: { type: 'offer', sdp: offer.sdp } } }));
+                // The camera stays silent on a wrong PIN, so no answer is the only signal there is.
+                clearTimeout(answerTimer);
+                answerTimer = setTimeout(() => showSecurityGate('Keine Antwort. Stimmen PIN und Kamera-ID, läuft der Stream?'), 10000);
+            } catch (e) { console.error('sendOffer error', e); }
+        }
+
+        function sendControl(action, extra = {}) {
+            if (dataChannel && dataChannel.readyState === 'open') {
+                dataChannel.send(JSON.stringify({ action, token: targetPin, ...extra }));
+            } else {
+                if (action !== 'get_state' && action !== 'get_boxes' && action !== 'set_audio') showToast('Steuerung noch nicht verbunden');
+            }
+        }
+
+        // ---------- Controls ----------
+        function toggleSiren() {
+            isSirenActive = !isSirenActive;
+            sirenBtn.classList.toggle('active', isSirenActive);
+            sendControl(isSirenActive ? 'play_siren' : 'stop_siren', { duration: 0 });
+            showToast(isSirenActive ? 'Sirene an' : 'Sirene aus');
+        }
+        function toggleFlash()  { sendControl('toggle_flashlight'); }
+        function toggleWide()   { sendControl('toggle_wide'); }
+        function switchCamera() { sendControl('switch_camera'); }
+
+        function toggleNight() {
+            isNightActive = !isNightActive;
+            nightBtn.classList.toggle('active', isNightActive);
+            sendControl('set_night', { enabled: isNightActive });
+        }
+
+        function onAiToggle(enabled) {
+            setAiBadge(enabled);
+            sendControl('set_ai', { enabled });
+        }
+
+        function takeSnapshot() {
+            try {
+                const canvas = document.createElement('canvas');
+                canvas.width = videoEl.videoWidth || 1280; canvas.height = videoEl.videoHeight || 720;
+                canvas.getContext('2d').drawImage(videoEl, 0, 0, canvas.width, canvas.height);
+                const link = document.createElement('a');
+                link.download = 'snapshot_' + Date.now() + '.jpg';
+                link.href = canvas.toDataURL('image/jpeg', 0.95);
+                link.click();
+                showToast('Bild gespeichert');
+            } catch(e) { showToast('Fehler beim Screenshot'); }
+        }
+
+        // The full-resolution photo comes over HTTP, so it needs the phone's own address.
+        const isServedByPhone = location.pathname === '/remote' || location.pathname === '/p2p' || location.pathname === '/p2p_viewer.html';
+        if (!isServedByPhone) document.getElementById('captureBtn').style.display = 'none';
+
+        async function capturePhoto() {
+            showToast('HD-Foto wird aufgenommen');
+            try {
+                const r = await fetch('/capture', { headers: { 'x-auth-pin': targetPin }, signal: AbortSignal.timeout(10000) });
+                if (r.ok) {
+                    const blob = await r.blob();
+                    const url  = URL.createObjectURL(blob);
+                    const link = document.createElement('a');
+                    link.download = 'photo_' + Date.now() + '.jpg';
+                    link.href = url;
+                    link.click();
+                    setTimeout(() => URL.revokeObjectURL(url), 5000);
+                    showToast('HD-Foto gespeichert');
+                } else { showToast('HD-Foto fehlgeschlagen'); }
+            } catch(e) { showToast('HD-Foto fehlgeschlagen'); }
+        }
+
+        function onZoomInput(val) {
+            const z = parseFloat(val);
+            document.getElementById('zoomVal').textContent = z.toFixed(1) + 'x';
+            document.getElementById('z1').classList.toggle('active', Math.abs(z - 1.0) < 0.15);
+            document.getElementById('z2').classList.toggle('active', Math.abs(z - 2.0) < 0.2);
+            document.getElementById('z3').classList.toggle('active', Math.abs(z - 3.0) < 0.2);
+            document.getElementById('z5').classList.toggle('active', z >= 4.8);
+        }
+        function sendZoom(val)      { sendControl('set_zoom', { value: parseFloat(val) }); }
+        function setZoomPreset(val) { document.getElementById('zoomSlider').value = val; onZoomInput(val); sendZoom(val); }
+        function onEvInput(val)     { document.getElementById('evVal').textContent = (parseInt(val) * 0.33).toFixed(1) + ' EV'; }
+        function sendEv(val)        { sendControl('set_exposure', { index: parseInt(val) }); }
+        function setEvPreset(val)   { document.getElementById('evSlider').value = val; onEvInput(val); sendEv(val); }
+        function rotateStream()     { currentRotation = (currentRotation + 90) % 360; videoEl.style.transform = 'rotate(' + currentRotation + 'deg)'; }
+
+        function setupWebAudio(stream) {
+            if (!audioCtx) {
+                audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+                const src = audioCtx.createMediaStreamSource(stream);
+                gainNode = audioCtx.createGain();
+                gainNode.gain.value = isAudioMuted ? 0 : 2.5;
+                src.connect(gainNode); gainNode.connect(audioCtx.destination);
+            }
+        }
+        function toggleAudio() {
+            isAudioMuted = !isAudioMuted;
+            audioBtn.classList.toggle('active', !isAudioMuted);
+            audioBtn.querySelector('use').setAttribute('href', isAudioMuted ? '#i-volume-x' : '#i-volume-2');
+            sendControl('set_audio', { enabled: !isAudioMuted });
+            if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
+            if (gainNode) gainNode.gain.value = isAudioMuted ? 0 : (parseInt(document.getElementById('volSlider').value) / 100);
+            videoEl.muted = isAudioMuted;
+        }
+        function onVolChange(val) {
+            document.getElementById('volVal').textContent = val + '%';
+            if (gainNode && !isAudioMuted) gainNode.gain.value = parseInt(val) / 100;
+        }
+
+        // Mouse wheel zoom
+        document.getElementById('streamContainer').addEventListener('wheel', (e) => {
+            e.preventDefault();
+            const slider = document.getElementById('zoomSlider');
+            let cur = parseFloat(slider.value);
+            cur = Math.min(5.0, Math.max(1.0, Math.round((cur + (e.deltaY < 0 ? 0.2 : -0.2)) * 10) / 10));
+            slider.value = cur; onZoomInput(cur); sendZoom(cur);
+        }, { passive: false });
+
+        // Security Gate is ALWAYS shown on start. ZERO auto-connection.
+        showSecurityGate();
+    </script>
+</body>
+</html>

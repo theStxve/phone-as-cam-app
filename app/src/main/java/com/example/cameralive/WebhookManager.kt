@@ -136,25 +136,172 @@ object WebhookManager {
         }
     }
 
-    fun sendAlarm(message: String, onResult: (Boolean, String) -> Unit = { _, _ -> }) {
+    fun sendAlarm(message: String, imageBytes: ByteArray? = null, onResult: (Boolean, String) -> Unit = { _, _ -> }) {
         if (!alarmWebhookEnabled || alarmWebhookUrl.isBlank()) {
             onResult(false, "Alarm-Webhook ist deaktiviert")
             return
         }
 
-        val jsonPayload = if (alarmWebhookUrl.contains("discord.com")) {
-            org.json.JSONObject().apply {
-                put("content", "🚨 **Camera Live Alarm:** $message")
-            }.toString()
-        } else {
-            org.json.JSONObject().apply {
-                put("event", "camera_alarm")
-                put("message", message)
-                put("timestamp", System.currentTimeMillis())
-                put("battery", currentBatteryLevel)
-            }.toString()
+        val urlLower = alarmWebhookUrl.lowercase()
+        
+        // If we have an image and it's a Discord webhook, we must use multipart/form-data
+        if (imageBytes != null && urlLower.contains("discord.com")) {
+            executor.submit {
+                try {
+                    val url = URL(alarmWebhookUrl)
+                    val conn = url.openConnection() as HttpURLConnection
+                    conn.connectTimeout = 10000
+                    conn.readTimeout = 10000
+                    conn.requestMethod = "POST"
+                    conn.doOutput = true
+
+                    val boundary = "=====CameraLiveBoundary${System.currentTimeMillis()}====="
+                    conn.setRequestProperty("Content-Type", "multipart/form-data; boundary=$boundary")
+
+                    val jsonPayload = org.json.JSONObject().apply {
+                        put("content", "🚨 **Camera Live Alarm:** $message")
+                    }.toString()
+
+                    val os = conn.outputStream
+                    val writer = os.writer(Charsets.UTF_8)
+
+                    // Part 1: payload_json
+                    writer.write("--$boundary\r\n")
+                    writer.write("Content-Disposition: form-data; name=\"payload_json\"\r\n")
+                    writer.write("Content-Type: application/json\r\n\r\n")
+                    writer.write(jsonPayload)
+                    writer.write("\r\n")
+
+                    // Part 2: file
+                    writer.write("--$boundary\r\n")
+                    writer.write("Content-Disposition: form-data; name=\"file\"; filename=\"alarm.jpg\"\r\n")
+                    writer.write("Content-Type: image/jpeg\r\n\r\n")
+                    writer.flush()
+
+                    os.write(imageBytes)
+                    os.flush()
+
+                    writer.write("\r\n--$boundary--\r\n")
+                    writer.flush()
+                    
+                    val code = conn.responseCode
+                    val msg = "HTTP $code"
+                    Log.i(TAG, "Discord Webhook with image finished: $msg")
+                    onResult(code in 200..299, msg)
+                    conn.disconnect()
+                } catch (e: Exception) {
+                    Log.e(TAG, "Discord Webhook with image failed", e)
+                    onResult(false, e.localizedMessage ?: "Upload Fehler")
+                }
+            }
+            return
+        }
+        
+        // If Telegram and we have an image, try to use sendPhoto API
+        if (imageBytes != null && urlLower.contains("api.telegram.org")) {
+            val photoUrl = alarmWebhookUrl.replace("sendMessage", "sendPhoto", ignoreCase = true)
+            executor.submit {
+                try {
+                    val url = URL(photoUrl)
+                    val conn = url.openConnection() as HttpURLConnection
+                    conn.connectTimeout = 10000
+                    conn.readTimeout = 10000
+                    conn.requestMethod = "POST"
+                    conn.doOutput = true
+
+                    val boundary = "=====CameraLiveBoundary${System.currentTimeMillis()}====="
+                    conn.setRequestProperty("Content-Type", "multipart/form-data; boundary=$boundary")
+
+                    val os = conn.outputStream
+                    val writer = os.writer(Charsets.UTF_8)
+
+                    // Part 1: caption
+                    writer.write("--$boundary\r\n")
+                    writer.write("Content-Disposition: form-data; name=\"caption\"\r\n\r\n")
+                    writer.write("🚨 *Camera Live Alarm:*\n$message")
+                    writer.write("\r\n")
+
+                    // Part 2: parse_mode
+                    writer.write("--$boundary\r\n")
+                    writer.write("Content-Disposition: form-data; name=\"parse_mode\"\r\n\r\n")
+                    writer.write("Markdown")
+                    writer.write("\r\n")
+
+                    // Part 3: chat_id (extract from URL query params if exists, Telegram usually needs it)
+                    // (Assuming chat_id is either in URL or not needed depending on how user set it up)
+                    val query = url.query
+                    if (query != null && query.contains("chat_id=")) {
+                        val chatId = query.split("&").firstOrNull { it.startsWith("chat_id=") }?.substringAfter("=")
+                        if (chatId != null) {
+                            writer.write("--$boundary\r\n")
+                            writer.write("Content-Disposition: form-data; name=\"chat_id\"\r\n\r\n")
+                            writer.write(chatId)
+                            writer.write("\r\n")
+                        }
+                    }
+
+                    // Part 4: photo
+                    writer.write("--$boundary\r\n")
+                    writer.write("Content-Disposition: form-data; name=\"photo\"; filename=\"alarm.jpg\"\r\n")
+                    writer.write("Content-Type: image/jpeg\r\n\r\n")
+                    writer.flush()
+
+                    os.write(imageBytes)
+                    os.flush()
+
+                    writer.write("\r\n--$boundary--\r\n")
+                    writer.flush()
+                    
+                    val code = conn.responseCode
+                    Log.i(TAG, "Telegram Webhook with image finished: HTTP $code")
+                    onResult(code in 200..299, "HTTP $code")
+                    conn.disconnect()
+                } catch (e: Exception) {
+                    Log.e(TAG, "Telegram Webhook with image failed", e)
+                    onResult(false, e.localizedMessage ?: "Upload Fehler")
+                }
+            }
+            return
+        }
+
+        // Fallback: Standard JSON POST without image
+        val jsonPayload = when {
+            urlLower.contains("discord.com") -> {
+                org.json.JSONObject().apply {
+                    put("content", "🚨 **Camera Live Alarm:** $message")
+                }.toString()
+            }
+            urlLower.contains("api.telegram.org") -> {
+                org.json.JSONObject().apply {
+                    put("text", "🚨 *Camera Live Alarm:*\n$message")
+                    put("parse_mode", "Markdown")
+                }.toString()
+            }
+            else -> {
+                org.json.JSONObject().apply {
+                    put("event", "camera_alarm")
+                    put("message", message)
+                    put("timestamp", System.currentTimeMillis())
+                    put("battery", currentBatteryLevel)
+                }.toString()
+            }
         }
 
         sendWebhook(alarmWebhookUrl, jsonPayload, onResult)
+    }
+
+    fun getWebhookStateJson(): String {
+        return org.json.JSONObject().apply {
+            put("batteryProtectionEnabled", batteryProtectionEnabled)
+            put("plugOffUrl", plugOffUrl)
+            put("plugOnUrl", plugOnUrl)
+            put("alarmWebhookEnabled", alarmWebhookEnabled)
+            put("alarmWebhookUrl", alarmWebhookUrl)
+            put("batteryMax", batteryMax)
+            put("batteryMin", batteryMin)
+            put("currentBatteryLevel", currentBatteryLevel)
+            put("isCurrentlyCharging", isCurrentlyCharging)
+            put("lastBatteryEventLog", lastBatteryEventLog)
+        }.toString()
     }
 }

@@ -18,7 +18,9 @@
 
 - **Zero-Latency WebRTC Stream:** Hardware-beschleunigtes **H.264 Baseline**-Encoding für Echtzeit-Übertragungen (< 80 ms Latenz) direkt im Browser ohne Zusatz-Software.
 - **Display-Off & Background Streaming:** Streamt dank `PARTIAL_WAKE_LOCK` und `WIFI_MODE_FULL_HIGH_PERF` unterbrechungsfrei weiter, selbst wenn der Bildschirm gesperrt oder ausgeschaltet ist.
-- **Zero-Client Idle Standby:** Ist kein Zuschauer im Web-Interface aktiv, pausiert die Frame-Kompression automatisch (minimaler Stromverbrauch, kein Überhitzen).
+- **Standby ohne Zuschauer:** Ohne Zuschauer und ohne KI-Alarm wird die Kamera freigegeben und wacht beim nächsten Zugriff wieder auf. Wacht nur die KI, läuft der Sensor mit seiner niedrigsten Bildrate, und auf ruhigen Szenen läuft die Inferenz seltener. GPS und High-Performance-WLAN sind nur aktiv, solange jemand zuschaut.
+- **Mikrofon nur auf Wunsch:** Das Handy-Mikrofon läuft erst, wenn im Browser der Ton eingeschaltet wird.
+- **PIN-Schutz:** Alle Zugriffe brauchen die PIN. Wiederholtes Raten wird gesperrt.
 - **Universeller Weitwinkel-Support:** Automatische Erkennung physischer Ultraweitwinkel-Linsen (< 3.2 mm Brennweite) sowie optischer Weitwinkelbereiche (< 1.0x) über `CameraManager`.
 - **Weitwinkel-Taschenlampe:** Intelligenter Hardware-Fallback für das Blitzlicht auch bei aktiver Weitwinkellinse.
 - **Selfie-Kamera & Bild-in-Bild (PiP):** Gleichzeitiges Selfie-PiP auf unterstützten Multi-Cam-Geräten sowie universeller Switch zwischen Haupt- und Frontkamera.
@@ -46,7 +48,8 @@ Schnellauswahl für typische Einsatzszenarien im Web-Interface:
 
 - **Kamera-Pipeline:** [CameraX](https://developer.android.com/training/camerax) (ImageAnalysis mit NV21 YUV-Puffern) + Camera2 Interop.
 - **Streaming-Engine:** WebRTC (Android SDK) mit direktem NV21-Puffer-Push und dynamischer Bitraten-/FPS-Regelung über `RtpSender.parameters`.
-- **Webserver:** Integrierter [NanoHTTPD](https://github.com/NanoHttpd/nanohttpd) Server zur Bereitstellung des Web-UI und REST-Steuerkanals.
+- **Webserver:** Integrierter [NanoHTTPD](https://github.com/NanoHttpd/nanohttpd) Server. Das Web-UI liegt in `app/src/main/assets/web`, `docs/index.html` ist eine Kopie von `viewer.html` für GitHub Pages.
+- **Tests:** `./gradlew testDebugUnitTest` prüft die Pipeline-Logik in `StreamingLogic.kt`. Für ein schlankes Test-APK: `./gradlew assembleDebug -PdevAbi=arm64-v8a`.
 - **App-UI:** [Jetpack Compose](https://developer.android.com/jetpack/compose) mit AMOLED-Sparmodus und IP-/Port-Konfiguration.
 
 ---
@@ -84,3 +87,5 @@ cd phone-as-cam-app
 
 ## [6] Lizenz
 Dieses Projekt ist für private und Bildungszwecke lizenziert. Details siehe Repository.
+
+Design-Durchgang nach [unslop](https://github.com/heydamir/unslop) von Damir Sokolovsky (CC BY 4.0). Schriften: IBM Plex (OFL). Icons: Lucide (ISC). QR-Codes: qrcode-generator von Kazuhiko Arase (MIT).

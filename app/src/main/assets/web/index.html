@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <title>Phone as Cam</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="theme-color" content="#000000">
+    <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><symbol id="i-camera" viewBox="0 0 24 24"><path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z" /> <circle cx="12" cy="13" r="3" /></symbol><symbol id="i-circle-dot" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" /> <circle cx="12" cy="12" r="1" /></symbol><symbol id="i-contact" viewBox="0 0 24 24"><path d="M16 2v2" /> <path d="M7 22v-2a2 2 0 0 1 2-2h6a2 2 0 0 1 2 2v2" /> <path d="M8 2v2" /> <circle cx="12" cy="11" r="3" /> <rect x="3" y="4" width="18" height="18" rx="2" /></symbol><symbol id="i-copy" viewBox="0 0 24 24"><rect width="14" height="14" x="8" y="8" rx="2" ry="2" /> <path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2" /></symbol><symbol id="i-download" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /> <polyline points="7 10 12 15 17 10" /> <line x1="12" x2="12" y1="15" y2="3" /></symbol><symbol id="i-external-link" viewBox="0 0 24 24"><path d="M15 3h6v6" /> <path d="M10 14 21 3" /> <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" /></symbol><symbol id="i-flashlight" viewBox="0 0 24 24"><path d="M18 6c0 2-2 2-2 4v10a2 2 0 0 1-2 2h-4a2 2 0 0 1-2-2V10c0-2-2-2-2-4V2h12z" /> <line x1="6" x2="18" y1="6" y2="6" /> <line x1="12" x2="12" y1="12" y2="12" /></symbol><symbol id="i-globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" /> <path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20" /> <path d="M2 12h20" /></symbol><symbol id="i-map-pin" viewBox="0 0 24 24"><path d="M20 10c0 4.993-5.539 10.193-7.399 11.799a1 1 0 0 1-1.202 0C9.539 20.193 4 14.993 4 10a8 8 0 0 1 16 0" /> <circle cx="12" cy="10" r="3" /></symbol><symbol id="i-megaphone" viewBox="0 0 24 24"><path d="m3 11 18-5v12L3 14v-3z" /> <path d="M11.6 16.8a3 3 0 1 1-5.8-1.6" /></symbol><symbol id="i-qr-code" viewBox="0 0 24 24"><rect width="5" height="5" x="3" y="3" rx="1" /> <rect width="5" height="5" x="16" y="3" rx="1" /> <rect width="5" height="5" x="3" y="16" rx="1" /> <path d="M21 16h-3a2 2 0 0 0-2 2v3" /> <path d="M21 21v.01" /> <path d="M12 7v3a2 2 0 0 1-2 2H7" /> <path d="M3 12h.01" /> <path d="M12 3h.01" /> <path d="M12 16v.01" /> <path d="M16 12h1" /> <path d="M21 12v.01" /> <path d="M12 21v-1" /></symbol><symbol id="i-rotate-ccw" viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" /> <path d="M3 3v5h5" /></symbol><symbol id="i-scan" viewBox="0 0 24 24"><path d="M3 7V5a2 2 0 0 1 2-2h2" /> <path d="M17 3h2a2 2 0 0 1 2 2v2" /> <path d="M21 17v2a2 2 0 0 1-2 2h-2" /> <path d="M7 21H5a2 2 0 0 1-2-2v-2" /></symbol><symbol id="i-siren" viewBox="0 0 24 24"><path d="M7 18v-6a5 5 0 1 1 10 0v6" /> <path d="M5 21a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-1a2 2 0 0 0-2-2H7a2 2 0 0 0-2 2z" /> <path d="M21 12h1" /> <path d="M18.5 4.5 18 5" /> <path d="M2 12h1" /> <path d="M12 2v1" /> <path d="m4.929 4.929.707.707" /> <path d="M12 12v6" /></symbol><symbol id="i-sliders-horizontal" viewBox="0 0 24 24"><line x1="21" x2="14" y1="4" y2="4" /> <line x1="10" x2="3" y1="4" y2="4" /> <line x1="21" x2="12" y1="12" y2="12" /> <line x1="8" x2="3" y1="12" y2="12" /> <line x1="21" x2="16" y1="20" y2="20" /> <line x1="12" x2="3" y1="20" y2="20" /> <line x1="14" x2="14" y1="2" y2="6" /> <line x1="8" x2="8" y1="10" y2="14" /> <line x1="16" x2="16" y1="18" y2="22" /></symbol><symbol id="i-switch-camera" viewBox="0 0 24 24"><path d="M11 19H4a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h5" /> <path d="M13 5h7a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2h-5" /> <circle cx="12" cy="12" r="3" /> <path d="m18 22-3-3 3-3" /> <path d="m6 2 3 3-3 3" /></symbol><symbol id="i-users" viewBox="0 0 24 24"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" /> <circle cx="9" cy="7" r="4" /> <path d="M22 21v-2a4 4 0 0 0-3-3.87" /> <path d="M16 3.13a4 4 0 0 1 0 7.75" /></symbol><symbol id="i-video" viewBox="0 0 24 24"><path d="m16 13 5.223 3.482a.5.5 0 0 0 .777-.416V7.87a.5.5 0 0 0-.752-.432L16 10.5" /> <rect x="2" y="6" width="14" height="12" rx="2" /></symbol><symbol id="i-volume-2" viewBox="0 0 24 24"><path d="M11 4.702a.705.705 0 0 0-1.203-.498L6.413 7.587A1.4 1.4 0 0 1 5.416 8H3a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2.416a1.4 1.4 0 0 1 .997.413l3.383 3.384A.705.705 0 0 0 11 19.298z" /> <path d="M16 9a5 5 0 0 1 0 6" /> <path d="M19.364 18.364a9 9 0 0 0 0-12.728" /></symbol><symbol id="i-volume-x" viewBox="0 0 24 24"><path d="M11 4.702a.705.705 0 0 0-1.203-.498L6.413 7.587A1.4 1.4 0 0 1 5.416 8H3a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2.416a1.4 1.4 0 0 1 .997.413l3.383 3.384A.705.705 0 0 0 11 19.298z" /> <line x1="22" x2="16" y1="9" y2="15" /> <line x1="16" x2="22" y1="9" y2="15" /></symbol><symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6 6 18" /> <path d="m6 6 12 12" /></symbol></svg>
+<div id="toastMsg" class="toast-msg" role="status"></div>
+
+<div class="main-stream" id="streamContainer">
+    <video id="webrtcVideo" autoplay playsinline muted></video>
+    <img id="mainImg" style="display:none" alt="Kamerabild">
+    <canvas id="aiCanvas"></canvas>
+</div>
+
+<div class="overlay selfie-pip" id="selfiePip" style="display:none">
+    <div class="overlay-label">Selfie</div>
+    <img id="frontImg" alt="Frontkamera">
+</div>
+<div class="overlay map-pip" id="mapPip">
+    <div class="overlay-label">Standort</div>
+    <button class="btn-pip-close" onclick="toggleMapVisibility(false)" aria-label="Karte schließen"><svg class="icon"><use href="#i-x"/></svg></button>
+    <div id="map"></div>
+</div>
+
+<div class="top-bar">
+    <div class="chip" id="badge"><span class="dot" id="statusDot"></span><span id="statusText">Verbinde</span></div>
+    <div class="chip" id="viewerBadge"><svg class="icon"><use href="#i-users"/></svg><span id="viewerText" class="mono">1</span></div>
+</div>
+
+<div class="controls-bar" id="controlsBar">
+    <button class="dock-btn primary" id="photoBtn" onclick="takePhoto()" title="Foto aufnehmen"><svg class="icon"><use href="#i-camera"/></svg><span class="btn-label-desktop">Foto</span></button>
+    <button class="dock-btn alert" id="clipBtn" onclick="recordClip(10)" title="10-Sekunden-Clip aufnehmen"><svg class="icon"><use href="#i-video"/></svg><span class="btn-label-desktop">Clip</span></button>
+    <span class="dock-sep"></span>
+    <button class="dock-btn" id="audioBtn" title="Ton vom Handy anhören"><svg class="icon"><use href="#i-volume-x"/></svg><span class="btn-label-desktop">Ton</span></button>
+    <button class="dock-btn alert" id="megafonBtn" onclick="toggleMegafon()" title="Durch das Handy sprechen"><svg class="icon"><use href="#i-megaphone"/></svg><span class="btn-label-desktop">Megafon</span></button>
+    <button class="dock-btn alert" id="sirenBtn" onclick="toggleSiren()" title="Abschreckungs-Sirene"><svg class="icon"><use href="#i-siren"/></svg><span class="btn-label-desktop">Sirene</span></button>
+    <span class="dock-sep"></span>
+    <button class="dock-btn" id="flashBtn" onclick="toggleFlash()" title="Taschenlampe"><svg class="icon"><use href="#i-flashlight"/></svg><span class="btn-label-desktop">Licht</span></button>
+    <button class="dock-btn" id="wideBtn" onclick="toggleWideAngle()" title="Weitwinkel"><svg class="icon"><use href="#i-scan"/></svg><span class="btn-label-desktop">Weitwinkel</span></button>
+    <button class="dock-btn" id="switchBtn" onclick="switchCamera()" title="Kamera wechseln"><svg class="icon"><use href="#i-switch-camera"/></svg><span class="btn-label-desktop">Wechseln</span></button>
+    <button class="dock-btn" onclick="rotateStream()" title="Bild um 90° drehen"><svg class="icon"><use href="#i-rotate-ccw"/></svg><span class="btn-label-desktop">Drehen</span></button>
+    <button class="dock-btn" id="selfieBtn" onclick="toggleSelfie()" title="Selfie-Bild einblenden"><svg class="icon"><use href="#i-contact"/></svg><span class="btn-label-desktop">Selfie</span></button>
+    <button class="dock-btn" id="mapBtn" onclick="toggleMapVisibility()" title="Standort-Karte"><svg class="icon"><use href="#i-map-pin"/></svg><span class="btn-label-desktop">Karte</span></button>
+    <span class="dock-sep"></span>
+    <button class="dock-btn" id="settingsBtn" onclick="toggleDrawer()" title="Einstellungen"><svg class="icon"><use href="#i-sliders-horizontal"/></svg><span class="btn-label-desktop">Einstellungen</span></button>
+</div>
+
+<div class="settings-overlay" id="settingsOverlay" onclick="closeDrawer()"></div>
+<aside class="settings-drawer" id="settingsDrawer" aria-label="Einstellungen">
+    <div class="drawer-handle"></div>
+    <div class="drawer-header">
+        <h2 class="drawer-title">Einstellungen</h2>
+        <button class="icon-btn" onclick="closeDrawer()" aria-label="Schließen"><svg class="icon"><use href="#i-x"/></svg></button>
+    </div>
+    <div class="drawer-body">
+
+        <section class="section">
+            <h3 class="section-label">Fernzugriff</h3>
+            <div class="finder pin-readout">
+                <div><small>Kamera-ID</small><code id="p2pRoomBadge">{{room}}</code></div>
+                <div style="text-align:right"><small>PIN</small><code class="pin" id="p2pPinBadge">{{pin}}</code></div>
+            </div>
+            <div class="row"><span>Relay</span><span class="value" id="p2pStatusBadge">Verbinde</span></div>
+            <div class="btn-row">
+                <button class="btn" onclick="copyRemoteP2pLink(true)"><svg class="icon"><use href="#i-globe"/></svg>Link kopieren</button>
+                <button class="btn" onclick="toggleP2pQrModal()"><svg class="icon"><use href="#i-qr-code"/></svg>QR-Code</button>
+            </div>
+            <div class="btn-row">
+                <button class="btn" onclick="openRemoteViewer()"><svg class="icon"><use href="#i-external-link"/></svg>Viewer öffnen</button>
+                <a class="btn" href="/download_viewer" download="CameraLive_Viewer.html"><svg class="icon"><use href="#i-download"/></svg>Als Datei</a>
+            </div>
+        </section>
+
+        <section class="section">
+            <h3 class="section-label">Stream</h3>
+            <div class="segmented" role="group" aria-label="Voreinstellungen">
+                <button class="btn-preset" data-preset="eco" onclick="applyPreset('eco')" title="480p, 15 FPS">Eco</button>
+                <button class="btn-preset" data-preset="balanced" onclick="applyPreset('balanced')" title="720p, 20 FPS">HD</button>
+                <button class="btn-preset" data-preset="smooth" onclick="applyPreset('smooth')" title="720p, 30 FPS">Smooth</button>
+                <button class="btn-preset" data-preset="ultra" onclick="applyPreset('ultra')" title="1080p, 60 FPS">Ultra</button>
+                <button class="btn-preset" data-preset="verlustfrei" onclick="applyPreset('verlustfrei')" title="Voller 4:3-Sensor ohne Beschnitt">Voll</button>
+            </div>
+            <div class="row">
+                <label for="resSelect">Auflösung</label>
+                <select id="resSelect" onchange="onResChange(this.value)">
+                    <option value="480p">480p (4:3)</option>
+                    <option value="720p">720p (16:9)</option>
+                    <option value="1080p">1080p (16:9)</option>
+                    <option value="verlustfrei">Voller Sensor (4:3)</option>
+                </select>
+            </div>
+            <label class="slider-row"><span>Bildrate</span><span class="val-badge" id="fVal"></span><input type="range" id="fps" min="5" max="60" step="1"></label>
+            <p class="hint warn" id="fpsWarning" style="display:none">Über 20 FPS wird das Handy wärmer und braucht mehr Akku</p>
+            <label class="slider-row"><span>Qualität</span><span class="val-badge" id="qVal"></span><input type="range" id="quality" min="10" max="95" step="5"></label>
+        </section>
+
+        <section class="section">
+            <h3 class="section-label">Belichtung</h3>
+            <label class="slider-row"><span>Korrektur</span><span class="val-badge" id="evVal"></span><input type="range" id="exposureSlider" step="1" oninput="onExposureInput(this.value)" onchange="onExposureChange(this.value)"></label>
+            <div class="segmented">
+                <button class="btn-preset" id="evDarkBtn" onclick="setExposurePreset(-3)" title="Für Gegenlicht und helle Szenen">Dunkler</button>
+                <button class="btn-preset" id="evAutoBtn" onclick="setExposurePreset(0)">Auto</button>
+                <button class="btn-preset" id="evNightBtn" onclick="setExposurePreset(3)" title="Für dunkle Szenen">Heller</button>
+            </div>
+            <label class="row"><span>Automatisch aufhellen bei Nacht</span><input type="checkbox" id="nightBoostCheck" onchange="onNightSettingChange()"></label>
+            <label class="row"><span>Licht bei Dunkelheit einschalten</span><input type="checkbox" id="nightTorchCheck" onchange="onNightSettingChange()"></label>
+        </section>
+
+        <section class="section">
+            <h3 class="section-label">Zoom</h3>
+            <label class="slider-row"><span>Faktor</span><span class="val-badge" id="zoomVal">{{zoomLabel}}</span><input type="range" id="zoomSlider" step="0.1" oninput="onZoomInput(this.value)" onchange="onZoomChange(this.value)"></label>
+            <div class="segmented">
+                <button class="btn-preset" id="zoom1xBtn" onclick="setZoomPreset(1.0)">1x</button>
+                <button class="btn-preset" id="zoom2xBtn" onclick="setZoomPreset(2.0)">2x</button>
+                <button class="btn-preset" id="zoom3xBtn" onclick="setZoomPreset(3.0)">3x</button>
+                <button class="btn-preset" id="zoom5xBtn" onclick="setZoomPreset(5.0)">5x</button>
+            </div>
+        </section>
+
+        <section class="section">
+            <h3 class="section-label">Foto</h3>
+            <label class="slider-row"><span>Qualität</span><span class="val-badge" id="pqVal"></span><input type="range" id="photoQuality" min="50" max="100" step="5"></label>
+            <label class="row"><span>Schnellfoto ohne Stream-Pause</span><input type="checkbox" id="fastPhotoCheck" onchange="onFastPhotoToggle(this.checked)"></label>
+            <p class="hint mono" id="sensorLabel"></p>
+        </section>
+
+        <section class="section">
+            <h3 class="section-label">KI-Alarm</h3>
+            <label class="row"><span>Erkennung aktiv</span><input type="checkbox" id="aiEnabledCheck" onchange="onAiSettingChange()"></label>
+            <div class="row"><span>Status</span><span class="value" id="aiBadgeStatus"></span></div>
+            <div class="row"><span>Alarmzone</span><span class="value" id="zoneBadgeText"></span></div>
+            <div class="btn-row">
+                <button class="btn" id="drawZoneBtn" onclick="toggleZoneDrawing()">Zone zeichnen</button>
+                <button class="btn" onclick="resetZone()">Ganzes Bild</button>
+            </div>
+            <div class="row">
+                <label for="aiTargetSelect">Auslöser</label>
+                <select id="aiTargetSelect" onchange="onAiSettingChange()">
+                    <option value="person">Personen</option>
+                    <option value="person_animal">Personen und Tiere</option>
+                    <option value="all">Alle Objekte</option>
+                </select>
+            </div>
+            <label class="slider-row"><span>Mindest-Sicherheit</span><span class="val-badge" id="aiConfVal"></span><input type="range" id="aiConfSlider" min="30" max="90" step="5" oninput="document.getElementById('aiConfVal').textContent=this.value+'%'" onchange="onAiSettingChange()"></label>
+            <div class="row">
+                <label for="aiCooldownSelect">Pause zwischen Alarmen</label>
+                <select id="aiCooldownSelect" onchange="onAiSettingChange()">
+                    <option value="10">10 Sekunden</option>
+                    <option value="30">30 Sekunden</option>
+                    <option value="60">1 Minute</option>
+                    <option value="120">2 Minuten</option>
+                </select>
+            </div>
+            <label class="row"><span>Sirene bei Alarm, 4 s</span><input type="checkbox" id="aiAutoSirenCheck" onchange="onAiSettingChange()"></label>
+            <label class="row"><span>Clip bei Alarm, 10 s</span><input type="checkbox" id="aiAutoClipCheck" onchange="onAiSettingChange()"></label>
+            <label class="row"><span>In Google Drive hochladen</span><input type="checkbox" id="aiAutoDriveCheck" onchange="onAiSettingChange()"></label>
+            <label class="row"><span>Webhook senden</span><input type="checkbox" id="aiWebhookCheck" onchange="onAiSettingChange()"></label>
+            <div class="btn-row">
+                <input type="url" class="text-input" id="webhookUrlInput" placeholder="https://…" aria-label="Webhook-URL (Telegram oder Discord)" style="flex:3">
+                <button class="btn" onclick="saveWebhookUrl()" style="flex:1">Sichern</button>
+            </div>
+            <div class="btn-row"><button class="btn" onclick="sendTestAlarm()">Test-Alarm senden</button></div>
+            <div class="row"><span>Letzter Alarm</span><span class="value mono" id="aiLastAlarmText"></span></div>
+        </section>
+
+        <section class="section">
+            <h3 class="section-label">Google Drive</h3>
+            <div class="row"><span>Konto</span><span class="value" id="driveAccountBadge"></span></div>
+            <label class="row"><span>Fotos sichern</span><input type="checkbox" id="drivePhotoCheck" onchange="onDriveToggle()"></label>
+            <label class="row"><span>Clips sichern</span><input type="checkbox" id="driveClipCheck" onchange="onDriveToggle()"></label>
+            <div class="btn-row"><a class="btn" href="https://drive.google.com/drive/u/0/my-drive" target="_blank" rel="noopener"><svg class="icon"><use href="#i-external-link"/></svg>Drive öffnen</a></div>
+            <p class="hint" id="driveLastStatus"></p>
+        </section>
+
+        <section class="section">
+            <h3 class="section-label">Audio</h3>
+            <label class="slider-row"><span>Mikrofon-Verstärkung</span><span class="val-badge" id="volVal">250%</span><input type="range" id="volSlider" min="0" max="300" step="10" value="250" oninput="onVolumeChange(this.value)"></label>
+            <label class="slider-row"><span>Megafon-Lautstärke</span><span class="val-badge" id="megafonVolVal">100%</span><input type="range" id="megafonVolSlider" min="0" max="100" step="5" value="100" oninput="onMegafonVolumeChange(this.value)"></label>
+            <label class="row"><span>Limiter gegen Rückkopplung</span><input type="checkbox" id="limiterCheck" checked onchange="toggleLimiter(this.checked)"></label>
+            <div class="row"><span>Pegel</span><div class="vu-bar"><div class="vu-fill" id="vuMeter"></div></div></div>
+            <div class="btn-row"><button class="btn" onclick="showBraveHelpModal()">Hilfe zur Mikrofon-Freigabe</button></div>
+        </section>
+
+        <section class="section">
+            <h3 class="section-label">Standort</h3>
+            <div class="row">
+                <label for="gpsSelect">GPS-Intervall</label>
+                <select id="gpsSelect" onchange="onGpsIntervalChange(this.value)">
+                    <option value="0">Aus</option>
+                    <option value="900">15 Minuten</option>
+                    <option value="300">5 Minuten</option>
+                    <option value="60">1 Minute</option>
+                    <option value="10">10 Sekunden</option>
+                </select>
+            </div>
+            <p class="hint">GPS läuft nur, solange jemand zuschaut</p>
+        </section>
+    </div>
+</aside>
+
+<div class="modal" id="braveHelpModal">
+    <div class="modal-card">
+        <div class="modal-header">
+            <h3>Mikrofon im Browser freigeben</h3>
+            <button class="icon-btn" onclick="closeBraveHelpModal()" aria-label="Schließen"><svg class="icon"><use href="#i-x"/></svg></button>
+        </div>
+        <p>Browser sperren das Mikrofon auf lokalen HTTP-Adressen. So schaltest du das Megafon frei:</p>
+        <ol>
+            <li>Neuen Tab öffnen, in Chrome mit <code>chrome://</code> statt <code>brave://</code>
+                <div class="btn-row"><input type="text" class="text-input" id="flagUrlInput" readonly value="brave://flags/#unsafely-treat-insecure-origin-as-secure" style="flex:4"><button class="btn" onclick="copyToClipboard('flagUrlInput')" aria-label="Kopieren"><svg class="icon"><use href="#i-copy"/></svg></button></div>
+            </li>
+            <li>Diese Adresse eintragen
+                <div class="btn-row"><input type="text" class="text-input" id="streamUrlInput" readonly style="flex:4"><button class="btn" onclick="copyToClipboard('streamUrlInput')" aria-label="Kopieren"><svg class="icon"><use href="#i-copy"/></svg></button></div>
+            </li>
+            <li>Auswahl auf <strong>Enabled</strong> stellen</li>
+            <li><strong>Relaunch</strong> klicken</li>
+        </ol>
+        <p>In Brave zusätzlich über das Löwen-Symbol das Mikrofon erlauben.</p>
+        <button class="btn solid wide" onclick="closeBraveHelpModal()">Schließen</button>
+    </div>
+</div>
+
+<div class="modal" id="p2pQrModal">
+    <div class="modal-card" style="width:360px">
+        <div class="modal-header">
+            <h3>Fernzugriff</h3>
+            <button class="icon-btn" onclick="closeP2pQrModal()" aria-label="Schließen"><svg class="icon"><use href="#i-x"/></svg></button>
+        </div>
+        <div class="segmented">
+            <button class="btn-preset active" id="qrTabWorld" onclick="switchQrMode(true)">Weltweit</button>
+            <button class="btn-preset" id="qrTabLan" onclick="switchQrMode(false)">Nur WLAN</button>
+        </div>
+        <p id="qrDescText"></p>
+        <div class="qr-frame"><div class="finder"><div id="p2pQrImg" role="img" aria-label="QR-Code zum Viewer"></div></div></div>
+        <div class="row"><span>Kamera-ID</span><code class="value">{{room}}</code></div>
+        <div class="row"><span>PIN</span><code class="value">{{pin}}</code></div>
+        <div class="btn-row" style="margin-top:8px"><button class="btn solid" onclick="copyRemoteP2pLink(currentQrIsWorld)">Link kopieren</button><button class="btn" onclick="closeP2pQrModal()">Schließen</button></div>
+    </div>
+</div>
+
+<script>window.BOOT = {{boot}};</script>
+<script src="/static/qrcode.js"></script>
+<script src="/static/app.js"></script>
+</body>
+</html>

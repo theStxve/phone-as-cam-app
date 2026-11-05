@@ -28,6 +28,7 @@ import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.Bundle
 import android.os.PowerManager
+import android.os.SystemClock
 import android.util.Log
 import android.util.Size
 import androidx.camera.camera2.interop.Camera2CameraInfo
@@ -43,14 +44,26 @@ import androidx.camera.core.resolutionselector.AspectRatioStrategy
 import androidx.camera.core.resolutionselector.ResolutionSelector
 import androidx.camera.core.resolutionselector.ResolutionStrategy
 import androidx.camera.lifecycle.ProcessCameraProvider
+import androidx.camera.video.FallbackStrategy
+import androidx.camera.video.FileOutputOptions
+import androidx.camera.video.MediaStoreOutputOptions
+import androidx.camera.video.PendingRecording
+import androidx.camera.video.Quality
+import androidx.camera.video.QualitySelector
+import androidx.camera.video.Recorder
+import androidx.camera.video.Recording
+import androidx.camera.video.VideoRecordEvent
 import androidx.core.app.ActivityCompat
 import androidx.core.app.NotificationCompat
+import androidx.camera.video.VideoCapture
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Matrix
+import android.provider.MediaStore
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.LifecycleService
 import java.io.ByteArrayOutputStream
+import java.io.File
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
@@ -63,13 +76,38 @@ class CameraStreamingService : LifecycleService(), CameraController, LocationLis
 
     companion object {
         private const val TAG = "CameraStreaming"
+        private const val ACTION_STOP = "com.example.cameralive.STOP"
+        private const val NOTIFICATION_ID = 1
+        const val PREFS = "CameraLivePrefs"
+        const val KEY_USER_STOPPED = "KEY_USER_STOPPED"
+        private const val KEY_STREAM_FPS = "KEY_STREAM_FPS"
+        private const val KEY_STREAM_QUALITY = "KEY_STREAM_QUALITY"
+        private const val KEY_STREAM_RES = "KEY_STREAM_RES"
+        private const val POWER_TICK_MS = 2_000L
+        private const val CLIENT_ACTIVITY_MS = 3_000L
+        private const val FRAME_WATCHDOG_MS = 8_000L
+        private const val LOW_POWER_FPS = 5
+        private const val SNAPSHOT_INTERVAL_MS = 500L
+        private const val AI_INTERVAL_LIVE_MS = 300L
+        private const val AI_INTERVAL_IDLE_MS = 400L
+        private const val AI_MAX_EDGE = 640
         val activeViewers = kotlinx.coroutines.flow.MutableStateFlow(0)
+        val isRunning = kotlinx.coroutines.flow.MutableStateFlow(false)
+        @Volatile var runningInstance: CameraStreamingService? = null
     }
 
-    private val CHANNEL_ID = "CameraStreamingChannel"
-    private var mjpegServer: MjpegServer? = null
-    private lateinit var cameraExecutor: ExecutorService
-    private lateinit var audioExecutor: ExecutorService
+    private val CHANNEL_ID = "PhoneAsCamStream"
+    var mjpegServer: MjpegServer? = null
+    private val cameraExecutor: ExecutorService = Executors.newFixedThreadPool(2)
+    private val audioExecutor: ExecutorService = Executors.newSingleThreadExecutor()
+    private val aiExecutor: ExecutorService = Executors.newSingleThreadExecutor()
+
+    fun invalidateAllSessions() {
+        mjpegServer?.authenticatedSessions?.clear()
+        // Waits for a running offer, so never on the main thread.
+        val rtc = webRtcManager
+        if (rtc != null) cameraExecutor.execute { rtc.closePeerConnection() }
+    }
     
     private var wakeLock: PowerManager.WakeLock? = null
     private var wifiLock: WifiManager.WifiLock? = null
@@ -92,9 +130,15 @@ class CameraStreamingService : LifecycleService(), CameraController, LocationLis
     val isFrontCameraEnabled = AtomicBoolean(false)
     val currentExposureIndex = AtomicInteger(0)
     val currentZoomRatio = AtomicReference<Float>(1.0f)
+
+    // Auto-Night-Boost settings
+    val autoNightBoostEnabled = AtomicBoolean(false)
+    val autoTorchNightEnabled = AtomicBoolean(false)
+    @Volatile private var isNightBoostActive = false
+    @Volatile private var isAutoTorchActive = false
+    @Volatile private var darkFrameCount = 0
+    @Volatile private var brightFrameCount = 0
     
-    @Volatile private var lastBackFrameTime = 0L
-    @Volatile private var lastFrontFrameTime = 0L
     @Volatile private var lastSnapshotTime = 0L
     @Volatile private var lastAiAnalysisTime = 0L
 
@@ -121,6 +165,39 @@ class CameraStreamingService : LifecycleService(), CameraController, LocationLis
     // ImageCapture use-case for native full-sensor-resolution photos
     @Volatile private var imageCapture: ImageCapture? = null
 
+    // Video recording properties
+    @Volatile private var videoCapture: VideoCapture<Recorder>? = null
+    @Volatile private var currentRecording: Recording? = null
+    private val recordingExecutor = Executors.newSingleThreadExecutor()
+    private val snapshotExecutor = Executors.newSingleThreadExecutor()
+    private val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
+
+    // Camera power management, see evaluatePower()
+    private val powerPolicy = CameraPowerPolicy()
+    @Volatile private var cameraPowerState = CameraPowerState.OFF
+    @Volatile private var cameraBound = false
+    @Volatile private var lastFrameAtMs = 0L
+    @Volatile private var lastClientActivityMs = Long.MIN_VALUE / 2
+    @Volatile private var highResCaptureRunning = false
+    private var powerTickRunning = false
+    private var rebindAttempts = 0
+    private var lastRebindMs = 0L
+    private var locationWanted = false
+    private val wakePosted = AtomicBoolean(false)
+    private var observedCameraState: androidx.lifecycle.LiveData<androidx.camera.core.CameraState>? = null
+
+    // Frame pipeline
+    private val backThrottle = FrameThrottle(20)
+    private val frontThrottle = FrameThrottle(10)
+    private val motionGate = MotionGate()
+    private val snapshotBusy = AtomicBoolean(false)
+    private val aiBusy = AtomicBoolean(false)
+    @Volatile private var snapshotBuffer: ByteArray? = null
+    @Volatile private var aiFrame: ByteArray? = null
+    private var aiPixels: IntArray? = null
+    private var aiBitmap: Bitmap? = null
+    @Volatile var isCurrentlyRecordingAlarmVideo = false
+
     private val batteryReceiver = object : android.content.BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             if (intent?.action == Intent.ACTION_BATTERY_CHANGED) {
@@ -139,46 +216,44 @@ class CameraStreamingService : LifecycleService(), CameraController, LocationLis
 
     override fun onCreate() {
         super.onCreate()
+        runningInstance = this
         createNotificationChannel()
-        cameraExecutor = Executors.newFixedThreadPool(2)
-        audioExecutor = Executors.newSingleThreadExecutor()
 
         // Call startForeground() IMMEDIATELY in onCreate to avoid the 5-second FGS deadline.
         // Android 14 requires this before any slow operations like WebRTC init.
+        try {
+            startForegroundWithGrantedTypes(buildNotification("Startet"))
+        } catch (e: Exception) {
+            // Without the camera permission Android refuses a camera service. Stop instead of crashing.
+            Log.e(TAG, "Could not enter foreground", e)
+            runningInstance = null
+            stopSelf()
+            return
+        }
+
+        val prefs = getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        prefs.edit().putBoolean(KEY_USER_STOPPED, false).apply()
+        isRunning.value = true
+        currentExposureIndex.set(prefs.getInt("KEY_EXPOSURE_INDEX", 0))
+        maxFps.set(prefs.getInt(KEY_STREAM_FPS, maxFps.get()))
+        jpegQuality.set(prefs.getInt(KEY_STREAM_QUALITY, jpegQuality.get()))
+        targetResolution.set(prefs.getString(KEY_STREAM_RES, null) ?: targetResolution.get())
+        backThrottle.fps = maxFps.get()
+
+        WebPages.init(this)
         WebhookManager.init(this)
         GoogleDriveBackupManager.init(this)
         AiMotionDetector.init(this)
-        val prefs = getSharedPreferences("CameraLivePrefs", Context.MODE_PRIVATE)
-        currentExposureIndex.set(prefs.getInt("KEY_EXPOSURE_INDEX", 0))
+        AlarmSoundManager.init(this)
+        P2pSignalingManager.init(this, this)
         try {
             registerReceiver(batteryReceiver, android.content.IntentFilter(Intent.ACTION_BATTERY_CHANGED))
         } catch (e: Exception) {
             Log.e(TAG, "Error registering battery receiver", e)
         }
-        val placeholderNotification = NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("Camera Streaming Active")
-            .setContentText("Starting…")
-            .setSmallIcon(R.drawable.ic_launcher_foreground)
-            .build()
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            startForeground(
-                1, placeholderNotification,
-                android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA or
-                android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION or
-                android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
-            )
-        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            startForeground(
-                1, placeholderNotification,
-                android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA or
-                android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION
-            )
-        } else {
-            startForeground(1, placeholderNotification)
-        }
-
-        // Acquire Partial WakeLock & WifiLock to keep CPU & streaming alive when the screen is turned off
+        // The partial wake lock keeps the server answering with the screen off. The Wi-Fi lock is
+        // only taken while streaming, see evaluatePower().
         try {
             val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
             wakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "CameraLive::StreamingWakeLock").apply {
@@ -188,30 +263,80 @@ class CameraStreamingService : LifecycleService(), CameraController, LocationLis
             val wifiManager = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
             wifiLock = wifiManager.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "CameraLive::StreamingWifiLock").apply {
                 setReferenceCounted(false)
-                acquire()
             }
-            Log.i(TAG, "WakeLock & WifiLock acquired successfully")
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to acquire WakeLock / WifiLock", e)
+            Log.e(TAG, "Failed to set up WakeLock / WifiLock", e)
         }
 
         // Init WebRTC on a background thread so we don't block the main thread
-        cameraExecutor.submit {
-            val mgr = WebRtcManager(this)
-            mgr.init(maxFps.get())
-            webRtcManager = mgr
+        cameraExecutor.execute {
+            try {
+                val mgr = WebRtcManager(this)
+                mgr.init(maxFps.get())
+                val (w, h) = resolutionSize(targetResolution.get())
+                mgr.updateResolution(w, h)
+                webRtcManager = mgr
+            } catch (e: Exception) {
+                Log.e(TAG, "WebRTC init failed", e)
+            }
         }
+    }
+
+    /** Declares only the service types whose permission is granted. Android 14 crashes on any other. */
+    private fun startForegroundWithGrantedTypes(notification: Notification) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+            startForeground(NOTIFICATION_ID, notification)
+            return
+        }
+        fun granted(permission: String) =
+            ActivityCompat.checkSelfPermission(this, permission) == PackageManager.PERMISSION_GRANTED
+
+        var types = 0
+        if (granted(Manifest.permission.CAMERA)) {
+            types = types or android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && granted(Manifest.permission.RECORD_AUDIO)) {
+            types = types or android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+        }
+        if (granted(Manifest.permission.ACCESS_FINE_LOCATION) || granted(Manifest.permission.ACCESS_COARSE_LOCATION)) {
+            types = types or android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION
+        }
+        check(types and android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA != 0) { "Camera permission missing" }
+        startForeground(NOTIFICATION_ID, notification, types)
+    }
+
+    private fun saveStreamSettings() {
+        getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+            .putInt(KEY_STREAM_FPS, maxFps.get())
+            .putInt(KEY_STREAM_QUALITY, jpegQuality.get())
+            .putString(KEY_STREAM_RES, targetResolution.get())
+            .apply()
+    }
+
+    private fun resolutionSize(res: String?): Pair<Int, Int> = when (res) {
+        "verlustfrei" -> Pair(1920, 1440)
+        "1080p" -> Pair(1920, 1080)
+        "720p" -> Pair(1280, 720)
+        else -> Pair(640, 480)
     }
 
     fun setStreamingFps(fps: Int) {
         maxFps.set(fps)
         webRtcManager?.updateFps(fps)
+        saveStreamSettings()
+        mainHandler.post {
+            if (cameraPowerState == CameraPowerState.FULL) {
+                backThrottle.fps = fps
+                applyFpsRange()
+            }
+        }
     }
 
     fun setStreamingQuality(quality: Int) {
         val clamped = quality.coerceIn(10, 95)
         jpegQuality.set(clamped)
         webRtcManager?.updateQuality(clamped)
+        saveStreamSettings()
     }
 
     fun setStreamingResolution(res: String) {
@@ -222,15 +347,11 @@ class CameraStreamingService : LifecycleService(), CameraController, LocationLis
             else -> "480p"
         }
         val prev = targetResolution.getAndSet(validRes)
-        val (w, h) = when (validRes) {
-            "verlustfrei" -> Pair(1920, 1440)
-            "1080p" -> Pair(1920, 1080)
-            "720p" -> Pair(1280, 720)
-            else -> Pair(640, 480)
-        }
+        val (w, h) = resolutionSize(validRes)
         webRtcManager?.updateResolution(w, h)
+        saveStreamSettings()
         if (prev != validRes) {
-            android.os.Handler(mainLooper).post { startCamera() }
+            mainHandler.post { startCamera() }
         }
     }
 
@@ -242,8 +363,32 @@ class CameraStreamingService : LifecycleService(), CameraController, LocationLis
         fastPhotoMode.set(enabled)
     }
 
+    /** Hands the camera back to the stream after a high-res photo. */
+    private fun finishHighResCapture() {
+        if (!highResCaptureRunning) return
+        highResCaptureRunning = false
+        try {
+            ProcessCameraProvider.getInstance(this).get(500, TimeUnit.MILLISECONDS).unbindAll()
+        } catch (_: Exception) {}
+        cameraBound = false
+        activeCamera = null
+        rebindAttempts = 0
+        startCamera()
+    }
+
+    /** Standby releases the camera. The request that woke it has to wait for the first frames. */
+    private fun awaitCameraReady(timeoutMs: Long) {
+        val deadline = SystemClock.elapsedRealtime() + timeoutMs
+        while (SystemClock.elapsedRealtime() < deadline) {
+            if (cameraBound && imageCapture != null) return
+            try { Thread.sleep(50) } catch (_: InterruptedException) { return }
+        }
+    }
+
     fun takeHighQualityPhoto(): ByteArray? {
+        onClientActivity()
         if (fastPhotoMode.get()) {
+            awaitCameraReady(3000)
             // --- FAST MODE (0s stream pause, uses currently bound active camera stream / imageCapture) ---
             val capture = imageCapture
             if (capture != null) {
@@ -369,13 +514,14 @@ class CameraStreamingService : LifecycleService(), CameraController, LocationLis
         val captureUseCase = captureBuilder.build()
 
         // Perform binding + capture on the main thread (CameraX requirement)
-        val mainHandler = android.os.Handler(mainLooper)
+        highResCaptureRunning = true
         mainHandler.post {
             try {
                 val cameraProvider = ProcessCameraProvider.getInstance(this).get(2, TimeUnit.SECONDS)
 
                 // Temporarily unbind everything so we can open the high-res sensor exclusively
                 cameraProvider.unbindAll()
+                cameraBound = false
                 imageCapture = null
 
                 val selector = highResSelector ?: CameraSelector.DEFAULT_BACK_CAMERA
@@ -390,36 +536,31 @@ class CameraStreamingService : LifecycleService(), CameraController, LocationLis
                         override fun onImageSaved(outputFileResults: ImageCapture.OutputFileResults) {
                             resultBytes = outputStream.toByteArray()
                             Log.i(TAG, "High-res photo: ${(resultBytes?.size ?: 0) / 1024} KB")
-                            // Restart streaming immediately after photo is saved
-                            mainHandler.post {
-                                try { cameraProvider.unbindAll() } catch (_: Exception) {}
-                                startCamera()
-                            }
+                            mainHandler.post { finishHighResCapture() }
                             photoLatch.countDown()
                         }
                         override fun onError(exception: ImageCaptureException) {
                             Log.e(TAG, "High-res ImageCapture failed", exception)
-                            mainHandler.post {
-                                try { cameraProvider.unbindAll() } catch (_: Exception) {}
-                                startCamera()
-                            }
+                            mainHandler.post { finishHighResCapture() }
                             photoLatch.countDown()
                         }
                     }
                 )
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to bind high-res capture session", e)
-                // Restart streaming even on failure
-                mainHandler.post { startCamera() }
+                finishHighResCapture()
                 photoLatch.countDown()
             }
         }
 
         // Wait for the photo (up to 8s for the full round-trip on slow sensors)
         try {
-            photoLatch.await(8000, TimeUnit.MILLISECONDS)
+            if (!photoLatch.await(8000, TimeUnit.MILLISECONDS)) {
+                Log.w(TAG, "High-res capture timed out")
+                mainHandler.post { finishHighResCapture() }
+            }
         } catch (e: Exception) {
-            Log.w(TAG, "High-res capture wait timeout", e)
+            Log.w(TAG, "High-res capture wait interrupted", e)
         }
 
         val finalPhoto = if (resultBytes != null && resultBytes.isNotEmpty()) resultBytes else latestCapturedPhoto
@@ -433,32 +574,33 @@ class CameraStreamingService : LifecycleService(), CameraController, LocationLis
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         super.onStartCommand(intent, flags, startId)
-        
-        val port = intent?.getIntExtra("PORT", 8080) ?: 8080
 
-        // Update notification with real port
-        val notificationIntent = Intent(this, MainActivity::class.java)
-        val pendingIntent = PendingIntent.getActivity(
-            this, 0, notificationIntent, PendingIntent.FLAG_IMMUTABLE
-        )
-        val notification: Notification = NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("Camera Streaming Active")
-            .setContentText("Streaming on port $port")
-            .setSmallIcon(R.drawable.ic_launcher_foreground)
-            .setContentIntent(pendingIntent)
-            .build()
-        val nm = getSystemService(NOTIFICATION_SERVICE) as android.app.NotificationManager
-        nm.notify(1, notification)
-
-        startServer(port)
-        startLocationTracking()
-        // Delay camera start slightly to ensure WebRTC init is complete
-        cameraExecutor.submit {
-            Thread.sleep(300)
-            android.os.Handler(mainLooper).post { startCamera() }
+        if (intent?.action == ACTION_STOP) {
+            getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putBoolean(KEY_USER_STOPPED, true).apply()
+            stopSelf()
+            return Service.START_NOT_STICKY
         }
 
+        val port = intent?.getIntExtra("PORT", 8080) ?: 8080
+        // Repeated starts, like an activity recreate, must not interrupt a running stream.
+        if (mjpegServer?.isAlive != true || mjpegServer?.listeningPort != port) {
+            startServer(port)
+        }
+        startLocationTracking()
+        if (!powerTickRunning) {
+            powerTickRunning = true
+            mainHandler.post(powerTick)
+        }
+        updateNotification()
+
         return Service.START_NOT_STICKY
+    }
+
+    private val powerTick = object : Runnable {
+        override fun run() {
+            evaluatePower()
+            mainHandler.postDelayed(this, POWER_TICK_MS)
+        }
     }
 
     private fun startServer(port: Int) {
@@ -468,7 +610,7 @@ class CameraStreamingService : LifecycleService(), CameraController, LocationLis
             mjpegServer?.service = this
             mjpegServer?.start()
         } catch (e: Exception) {
-            e.printStackTrace()
+            Log.e(TAG, "Web server could not start on port $port", e)
         }
     }
     
@@ -483,8 +625,7 @@ class CameraStreamingService : LifecycleService(), CameraController, LocationLis
 
     private fun updateLocationTracking() {
         locationManager?.removeUpdates(this)
-        if (gpsIntervalSec <= 0) {
-            Log.i(TAG, "GPS tracking stopped (Stationary Mode)")
+        if (gpsIntervalSec <= 0 || !locationWanted) {
             return
         }
         if (ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED &&
@@ -493,9 +634,16 @@ class CameraStreamingService : LifecycleService(), CameraController, LocationLis
         }
         val minTimeMs = gpsIntervalSec * 1000L
         try {
-            locationManager?.requestLocationUpdates(LocationManager.GPS_PROVIDER, minTimeMs, 10f, this)
-            locationManager?.requestLocationUpdates(LocationManager.NETWORK_PROVIDER, minTimeMs, 10f, this)
-            Log.i(TAG, "GPS tracking updated: interval = ${gpsIntervalSec}s")
+            val manager = locationManager ?: return
+            (manager.getLastKnownLocation(LocationManager.GPS_PROVIDER)
+                ?: manager.getLastKnownLocation(LocationManager.NETWORK_PROVIDER))?.let { onLocationChanged(it) }
+            if (manager.isProviderEnabled(LocationManager.GPS_PROVIDER)) {
+                manager.requestLocationUpdates(LocationManager.GPS_PROVIDER, minTimeMs, 10f, this)
+            }
+            if (manager.isProviderEnabled(LocationManager.NETWORK_PROVIDER)) {
+                manager.requestLocationUpdates(LocationManager.NETWORK_PROVIDER, minTimeMs, 10f, this)
+            }
+            Log.i(TAG, "GPS tracking on: interval = ${gpsIntervalSec}s")
         } catch (e: Exception) {
             Log.w(TAG, "Error updating location updates", e)
         }
@@ -652,13 +800,20 @@ class CameraStreamingService : LifecycleService(), CameraController, LocationLis
         return null
     }
 
+    fun requestCameraRestart() {
+        android.os.Handler(mainLooper).post { startCamera() }
+    }
+
     @androidx.annotation.OptIn(androidx.camera.camera2.interop.ExperimentalCamera2Interop::class)
     private fun startCamera() {
+        if (cameraPowerState == CameraPowerState.OFF || runningInstance !== this) return
         val cameraProviderFuture = ProcessCameraProvider.getInstance(this)
 
         cameraProviderFuture.addListener({
+            if (cameraPowerState == CameraPowerState.OFF || runningInstance !== this) return@addListener
             val cameraProvider: ProcessCameraProvider = cameraProviderFuture.get()
             cameraProvider.unbindAll()
+            cameraBound = false
 
             if (ultraWideCameraId == null) {
                 ultraWideCameraId = findUltraWideCameraId()
@@ -694,39 +849,15 @@ class CameraStreamingService : LifecycleService(), CameraController, LocationLis
                 .setResolutionSelector(backResolutionSelector)
                 .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
 
-            val targetFps = maxFps.get().coerceIn(5, 60)
-            androidx.camera.camera2.interop.Camera2Interop.Extender(backBuilder).apply {
-                setCaptureRequestOption(
-                    android.hardware.camera2.CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE,
-                    android.util.Range(targetFps.coerceAtLeast(15), targetFps)
-                )
-                // Optimize camera sensor pipeline for minimal frame-latency
-                setCaptureRequestOption(
-                    android.hardware.camera2.CaptureRequest.CONTROL_AE_MODE,
-                    android.hardware.camera2.CaptureRequest.CONTROL_AE_MODE_ON
-                )
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                    setCaptureRequestOption(
-                        android.hardware.camera2.CaptureRequest.CONTROL_ENABLE_ZSL,
-                        true
-                    )
-                }
-            }
-
             val primaryAnalyzer = backBuilder.build().also {
                 it.setAnalyzer(cameraExecutor) { imageProxy ->
-                    val now = System.currentTimeMillis()
-                    // When WebRTC peer is active, pass every frame immediately (WebRTC handles hardware rate limiting)
-                    // If no WebRTC peer, throttle to maxFps for JPEG snapshots
-                    if (webRtcManager?.hasActivePeer() != true) {
-                        val minInterval = 1000L / maxFps.get()
-                        if (now - lastBackFrameTime < minInterval - 4) {
-                            imageProxy.close()
-                            return@setAnalyzer
-                        }
+                    val now = SystemClock.elapsedRealtime()
+                    lastFrameAtMs = now
+                    if (!backThrottle.shouldPass(now)) {
+                        imageProxy.close()
+                        return@setAnalyzer
                     }
-                    lastBackFrameTime = now
-                    processImage(imageProxy, isFront = false)
+                    processImage(imageProxy)
                 }
             }
 
@@ -745,18 +876,11 @@ class CameraStreamingService : LifecycleService(), CameraController, LocationLis
                 .build()
                 .also {
                     it.setAnalyzer(cameraExecutor) { imageProxy ->
-                        if (!isFrontCameraEnabled.get()) {
+                        if (!isFrontCameraEnabled.get() || !frontThrottle.shouldPass(SystemClock.elapsedRealtime())) {
                             imageProxy.close()
                             return@setAnalyzer
                         }
-                        val now = System.currentTimeMillis()
-                        val minInterval = 1000L / maxFps.get()
-                        if (now - lastFrontFrameTime >= minInterval) {
-                            lastFrontFrameTime = now
-                            processImage(imageProxy, isFront = true)
-                        } else {
-                            imageProxy.close()
-                        }
+                        processFrontImage(imageProxy)
                     }
                 }
 
@@ -765,6 +889,17 @@ class CameraStreamingService : LifecycleService(), CameraController, LocationLis
                 .setCaptureMode(ImageCapture.CAPTURE_MODE_MAXIMIZE_QUALITY)
                 .setJpegQuality(photoJpegQuality.get())
                 .build()
+
+            // Build VideoCapture for alarm recordings
+            val qualitySelector = QualitySelector.from(
+                Quality.HD,
+                FallbackStrategy.lowerQualityOrHigherThan(Quality.SD)
+            )
+            val recorder = Recorder.Builder()
+                .setExecutor(cameraExecutor)
+                .setQualitySelector(qualitySelector)
+                .build()
+            val primaryVideoCapture = VideoCapture.withOutput(recorder)
 
             // 1. Try concurrent camera API ONLY if front camera is requested AND phone supports it
             val concurrentInfos = cameraProvider.availableConcurrentCameraInfos
@@ -789,10 +924,8 @@ class CameraStreamingService : LifecycleService(), CameraController, LocationLis
                     val concurrentCamera = cameraProvider.bindToLifecycle(configs)
                     activeCamera = concurrentCamera.cameras.firstOrNull()
                     imageCapture = primaryImageCapture
-                    applyTorchState(isFlashlightOn)
-                    applyWideAngleIfActive()
-                    applyExposureCompensation()
-                    observeCameraErrors(activeCamera)
+                    videoCapture = null
+                    onCameraBound()
                     Log.i(TAG, "Concurrent cameras bound successfully (with ImageCapture)")
                     return@addListener
                 } catch (e: Exception) {
@@ -823,37 +956,41 @@ class CameraStreamingService : LifecycleService(), CameraController, LocationLis
             }
 
             try {
-                // Try binding with ImageCapture (full native resolution)
-                activeCamera = cameraProvider.bindToLifecycle(this, selector, primaryAnalyzer, primaryImageCapture)
-                imageCapture = primaryImageCapture
-                if (currentLensFacing == CameraSelector.LENS_FACING_BACK) {
-                    applyTorchState(isFlashlightOn)
-                    applyWideAngleIfActive()
+                // Try binding with ImageCapture (+ optional VideoCapture for alarm recording)
+                if (AiMotionDetector.isAutoVideoDriveEnabled) {
+                    activeCamera = cameraProvider.bindToLifecycle(
+                        this, selector, primaryAnalyzer, primaryImageCapture, primaryVideoCapture
+                    )
+                    videoCapture = primaryVideoCapture
+                } else {
+                    activeCamera = cameraProvider.bindToLifecycle(
+                        this, selector, primaryAnalyzer, primaryImageCapture
+                    )
+                    videoCapture = null
                 }
-                applyExposureCompensation()
-                observeCameraErrors(activeCamera)
-                Log.i(TAG, "Bound primary camera + ImageCapture: facing=$currentLensFacing, wideAngle=$isWideAngle")
+                imageCapture = primaryImageCapture
+                onCameraBound()
+                Log.i(TAG, "Bound primary camera + ImageCapture (VideoAlarm=${AiMotionDetector.isAutoVideoDriveEnabled}): facing=$currentLensFacing")
             } catch (exc: Exception) {
-                Log.w(TAG, "Failed to bind with ImageCapture ($selector), retrying without", exc)
+                Log.w(TAG, "Failed to bind with full use-cases, retrying minimal set", exc)
                 imageCapture = null
+                videoCapture = null
                 try {
                     cameraProvider.unbindAll()
                     activeCamera = cameraProvider.bindToLifecycle(this, selector, primaryAnalyzer)
-                    if (currentLensFacing == CameraSelector.LENS_FACING_BACK) {
-                        applyTorchState(isFlashlightOn)
-                        applyWideAngleIfActive()
-                    }
-                    applyExposureCompensation()
-                    observeCameraErrors(activeCamera)
-                    Log.i(TAG, "Bound primary camera without ImageCapture (fallback)")
+                    onCameraBound()
+                    Log.i(TAG, "Bound primary camera with ImageAnalysis only (fallback)")
                 } catch (exc2: Exception) {
                     Log.e(TAG, "Failed to bind camera: $selector", exc2)
                     try {
                         currentLensFacing = CameraSelector.LENS_FACING_BACK
                         activeCamera = cameraProvider.bindToLifecycle(this, CameraSelector.DEFAULT_BACK_CAMERA, primaryAnalyzer)
-                        applyExposureCompensation()
+                        onCameraBound()
                     } catch (e2: Exception) {
-                        Log.e(TAG, "Fatal: failed to bind default back camera", e2)
+                        // The power tick retries with backoff.
+                        Log.e(TAG, "Could not bind any camera", e2)
+                        activeCamera = null
+                        cameraBound = false
                     }
                 }
             }
@@ -895,213 +1032,276 @@ class CameraStreamingService : LifecycleService(), CameraController, LocationLis
     }
 
     private fun observeCameraErrors(camera: Camera?) {
-        camera?.cameraInfo?.cameraState?.observe(this) { state ->
-            if (state.error?.code == androidx.camera.core.CameraState.ERROR_CAMERA_DISABLED
-                && !cameraRetryPending) {
-                cameraRetryPending = true
-                Log.w(TAG, "Camera disabled error – will retry in 2s")
-                android.os.Handler(mainLooper).postDelayed({
-                    cameraRetryPending = false
-                    startCamera()
-                }, 2000)
+        val state = camera?.cameraInfo?.cameraState ?: return
+        observedCameraState?.removeObserver(cameraStateObserver)
+        observedCameraState = state
+        state.observe(this, cameraStateObserver)
+    }
+
+    private val cameraStateObserver = androidx.lifecycle.Observer<androidx.camera.core.CameraState> { state ->
+        val error = state.error ?: return@Observer
+        // CameraX retries recoverable errors itself. These two need a fresh bind.
+        val needsRebind = error.code == androidx.camera.core.CameraState.ERROR_CAMERA_DISABLED ||
+            error.code == androidx.camera.core.CameraState.ERROR_CAMERA_FATAL_ERROR
+        if (needsRebind) {
+            Log.w(TAG, "Camera error ${error.code}, the watchdog will rebind")
+            cameraBound = false
+        }
+    }
+
+    private fun onCameraBound() {
+        cameraBound = true
+        lastFrameAtMs = SystemClock.elapsedRealtime()
+        if (currentLensFacing == CameraSelector.LENS_FACING_BACK) {
+            applyTorchState(isFlashlightOn)
+            applyWideAngleIfActive()
+        }
+        applyExposureCompensation()
+        observeCameraErrors(activeCamera)
+        applyFpsRange()
+    }
+
+    /** Applies the sensor speed for the current state without tearing the session down. */
+    @androidx.annotation.OptIn(androidx.camera.camera2.interop.ExperimentalCamera2Interop::class)
+    private fun applyFpsRange() {
+        val cam = activeCamera ?: return
+        try {
+            val target = if (cameraPowerState == CameraPowerState.LOW) LOW_POWER_FPS else maxFps.get()
+            val ranges = Camera2CameraInfo.from(cam.cameraInfo)
+                .getCameraCharacteristic(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES)
+                ?.map { it.lower to it.upper } ?: return
+            val picked = pickFpsRange(ranges, target) ?: return
+            val options = androidx.camera.camera2.interop.CaptureRequestOptions.Builder()
+                .setCaptureRequestOption(
+                    android.hardware.camera2.CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE,
+                    android.util.Range(picked.first, picked.second)
+                )
+                .build()
+            androidx.camera.camera2.interop.Camera2CameraControl.from(cam.cameraControl)
+                .setCaptureRequestOptions(options)
+            Log.i(TAG, "Sensor range ${picked.first}-${picked.second} fps (state=$cameraPowerState, target=$target)")
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not apply FPS range", e)
+        }
+    }
+
+    /** Runs every 2 seconds on the main thread and whenever a client shows up. */
+    private fun evaluatePower() {
+        if (runningInstance !== this) return
+        val now = SystemClock.elapsedRealtime()
+        val viewerActive = mjpegServer?.hasActiveClients() == true || now - lastClientActivityMs < CLIENT_ACTIVITY_MS
+        val newState = powerPolicy.evaluate(
+            nowMs = now,
+            viewerActive = viewerActive,
+            aiEnabled = AiMotionDetector.isEnabled && !AiMotionDetector.isUnavailable,
+            recording = isCurrentlyRecordingAlarmVideo || highResCaptureRunning,
+            torchOn = isFlashlightOn
+        )
+        val changed = newState != cameraPowerState
+        cameraPowerState = newState
+        backThrottle.fps = if (newState == CameraPowerState.FULL) maxFps.get() else LOW_POWER_FPS
+
+        // High-performance Wi-Fi only matters while streaming. Idle, normal power save still answers.
+        setWifiLockHeld(newState == CameraPowerState.FULL)
+        setLocationWanted(viewerActive)
+
+        when {
+            newState == CameraPowerState.OFF -> releaseCamera()
+            highResCaptureRunning -> Unit
+            !cameraBound -> rebindWithBackoff(now)
+            now - lastFrameAtMs > FRAME_WATCHDOG_MS -> {
+                Log.w(TAG, "No camera frames for ${now - lastFrameAtMs} ms, rebinding")
+                cameraBound = false
+                rebindWithBackoff(now)
+            }
+            else -> rebindAttempts = 0
+        }
+        if (changed) {
+            Log.i(TAG, "Camera power state: $newState")
+            if (cameraBound) applyFpsRange()
+            updateNotification()
+        }
+    }
+
+    private fun rebindWithBackoff(now: Long) {
+        val delay = (2_000L shl rebindAttempts.coerceAtMost(5)).coerceAtMost(60_000L)
+        if (rebindAttempts > 0 && now - lastRebindMs < delay) return
+        rebindAttempts++
+        lastRebindMs = now
+        lastFrameAtMs = now
+        startCamera()
+    }
+
+    private fun releaseCamera() {
+        if (!cameraBound && activeCamera == null) return
+        try {
+            ProcessCameraProvider.getInstance(this).get(500, TimeUnit.MILLISECONDS).unbindAll()
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not release camera", e)
+        }
+        activeCamera = null
+        imageCapture = null
+        videoCapture = null
+        cameraBound = false
+        Log.i(TAG, "Camera released (standby)")
+    }
+
+    /** Called for every authorized request and offer: wakes the camera without waiting for the next tick. */
+    fun onClientActivity() {
+        lastClientActivityMs = SystemClock.elapsedRealtime()
+        if (cameraPowerState != CameraPowerState.FULL && wakePosted.compareAndSet(false, true)) {
+            mainHandler.post {
+                wakePosted.set(false)
+                evaluatePower()
             }
         }
     }
-    
-    private fun processImage(imageProxy: androidx.camera.core.ImageProxy, isFront: Boolean) {
-        try {
-            // Drop frame immediately only if no viewer is watching AND AI detection is off
-            val isFrontViewerActive = isFrontCameraEnabled.get() && mjpegServer?.hasActiveFrontClients() == true
-            val isBackViewerActive = mjpegServer?.hasActiveClients() == true
-            val isAiActive = AiMotionDetector.isEnabled && !isFront
 
-            if (isFront) {
-                if (!isFrontViewerActive) return
-            } else {
-                if (!isBackViewerActive && !isAiActive) return
+    private fun setWifiLockHeld(held: Boolean) {
+        try {
+            val lock = wifiLock ?: return
+            if (held && !lock.isHeld) lock.acquire()
+            if (!held && lock.isHeld) lock.release()
+        } catch (e: Exception) {
+            Log.w(TAG, "WifiLock change failed", e)
+        }
+    }
+
+    private fun setLocationWanted(wanted: Boolean) {
+        if (locationWanted == wanted) return
+        locationWanted = wanted
+        updateLocationTracking()
+    }
+    
+    /** Display rotation the browser receives. Same mapping everywhere: stream, photos and AI. */
+    private fun streamRotation(baseRotation: Int): Int =
+        if (currentLensFacing == CameraSelector.LENS_FACING_FRONT) (baseRotation + 90) % 360
+        else (baseRotation + 270) % 360
+
+    /** Copies a YUV_420_888 frame into [nv21]. Handles row stride != width. */
+    private fun copyToNv21(imageProxy: androidx.camera.core.ImageProxy, nv21: ByteArray) {
+        val width = imageProxy.width
+        val height = imageProxy.height
+        val yPlane = imageProxy.planes[0]
+        val uPlane = imageProxy.planes[1]
+        val vPlane = imageProxy.planes[2]
+        val yRowStride = yPlane.rowStride
+        val uvRowStride = uPlane.rowStride
+        val uvPixelStride = uPlane.pixelStride
+
+        val yBuffer = yPlane.buffer
+        var pos = 0
+        for (row in 0 until height) {
+            yBuffer.position(row * yRowStride)
+            yBuffer.get(nv21, pos, width)
+            pos += width
+        }
+
+        val vBuffer = vPlane.buffer
+        val uBuffer = uPlane.buffer
+        val uvHeight = height / 2
+        val uvWidth = width / 2
+        if (uvPixelStride == 2) {
+            for (row in 0 until uvHeight) {
+                val isLast = row == uvHeight - 1
+                vBuffer.position(row * uvRowStride)
+                vBuffer.get(nv21, pos, if (isLast) width - 1 else width)
+                if (isLast) {
+                    val lastUIndex = (uvHeight - 1) * uvRowStride + (uvWidth - 1) * uvPixelStride
+                    nv21[pos + width - 1] = uBuffer.get(lastUIndex)
+                }
+                pos += width
             }
+        } else {
+            for (row in 0 until uvHeight) {
+                for (col in 0 until uvWidth) {
+                    val uvIndex = row * uvRowStride + col * uvPixelStride
+                    nv21[pos++] = vBuffer.get(uvIndex)
+                    nv21[pos++] = uBuffer.get(uvIndex)
+                }
+            }
+        }
+    }
+
+    private fun processFrontImage(imageProxy: androidx.camera.core.ImageProxy) {
+        try {
+            if (mjpegServer?.hasActiveFrontClients() != true) return
+            val width = imageProxy.width
+            val height = imageProxy.height
+            val size = width * height * 3 / 2
+            val nv21 = frontNv21Buffer?.takeIf { it.size == size } ?: ByteArray(size).also { frontNv21Buffer = it }
+            copyToNv21(imageProxy, nv21)
+            val out = ByteArrayOutputStream()
+            YuvImage(nv21, ImageFormat.NV21, width, height, null)
+                .compressToJpeg(Rect(0, 0, width, height), jpegQuality.get(), out)
+            mjpegServer?.broadcastFrameFront(out.toByteArray())
+        } catch (e: Exception) {
+            Log.e(TAG, "Error processing front frame", e)
+        } finally {
+            imageProxy.close()
+        }
+    }
+
+    /**
+     * Back camera pipeline. Copying a frame is the expensive part, so it only happens when something
+     * consumes this particular frame: a WebRTC peer, a due snapshot, a due AI tick or a photo.
+     */
+    private fun processImage(imageProxy: androidx.camera.core.ImageProxy) {
+        try {
+            val server = mjpegServer
+            val now = SystemClock.elapsedRealtime()
+            val rtc = webRtcManager
+            val wantsWebRtc = rtc?.hasActivePeer() == true
+            val wantsSnapshot = server?.hasActiveBackSnapshotClients() == true &&
+                now - lastSnapshotTime >= SNAPSHOT_INTERVAL_MS && !snapshotBusy.get()
+            val wantsPhoto = isPhotoRequested
+            val aiEnabled = AiMotionDetector.isEnabled && !AiMotionDetector.isUnavailable
+            val wantsBrightness = autoNightBoostEnabled.get() && cameraPowerState == CameraPowerState.FULL
+            val aiInterval = if (cameraPowerState == CameraPowerState.FULL) AI_INTERVAL_LIVE_MS else AI_INTERVAL_IDLE_MS
+            val wantsAi = (aiEnabled || wantsBrightness) && now - lastAiAnalysisTime >= aiInterval && !aiBusy.get()
+
+            if (!wantsWebRtc && !wantsSnapshot && !wantsPhoto && !wantsAi) return
 
             val width = imageProxy.width
             val height = imageProxy.height
-            
-            val yPlane = imageProxy.planes[0]
-            val uPlane = imageProxy.planes[1]
-            val vPlane = imageProxy.planes[2]
-            
-            val yRowStride = yPlane.rowStride
-            val uvRowStride = uPlane.rowStride
-            val uvPixelStride = uPlane.pixelStride
-            
-            val bufferSize = width * height * 3 / 2
-            val nv21 = if (isFront) {
-                var buf = frontNv21Buffer
-                if (buf == null || buf.size != bufferSize) {
-                    buf = ByteArray(bufferSize)
-                    frontNv21Buffer = buf
-                }
-                buf
-            } else {
-                var buf = backNv21Buffer
-                if (buf == null || buf.size != bufferSize) {
-                    buf = ByteArray(bufferSize)
-                    backNv21Buffer = buf
-                }
-                buf
-            }
-            
-            // Copy Y plane row by row (handles stride != width)
-            val yBuffer = yPlane.buffer
-            var pos = 0
-            for (row in 0 until height) {
-                yBuffer.position(row * yRowStride)
-                yBuffer.get(nv21, pos, width)
-                pos += width
-            }
-            
-            // Copy VU interleaved for NV21
-            val vBuffer = vPlane.buffer
-            val uBuffer = uPlane.buffer
-            val uvHeight = height / 2
-            val uvWidth = width / 2
-            
-            if (uvPixelStride == 2) {
-                val uvRowBytes = width
-                for (row in 0 until uvHeight) {
-                    val rowLen = if (row == uvHeight - 1) uvRowBytes - 1 else uvRowBytes
-                    vBuffer.position(row * uvRowStride)
-                    vBuffer.get(nv21, pos, rowLen)
-                    if (row == uvHeight - 1) {
-                        val lastUIndex = (uvHeight - 1) * uvRowStride + (uvWidth - 1) * uvPixelStride
-                        nv21[pos + uvRowBytes - 1] = uBuffer.get(lastUIndex)
-                    }
-                    pos += uvRowBytes
-                }
-            } else {
-                for (row in 0 until uvHeight) {
-                    for (col in 0 until uvWidth) {
-                        val uvIndex = row * uvRowStride + col * uvPixelStride
-                        nv21[pos++] = vBuffer.get(uvIndex)
-                        nv21[pos++] = uBuffer.get(uvIndex)
-                    }
-                }
-            }
-            
-            // High-Quality Photo Capture Trigger: process and rotate frame at 95% JPEG quality
-            if (isPhotoRequested) {
-                try {
-                    val yuvImage = YuvImage(nv21, ImageFormat.NV21, width, height, null)
-                    val rawOut = ByteArrayOutputStream()
-                    yuvImage.compressToJpeg(Rect(0, 0, width, height), 95, rawOut)
-                    val rawBytes = rawOut.toByteArray()
+            val rotation = streamRotation(imageProxy.imageInfo.rotationDegrees)
+            val size = width * height * 3 / 2
+            val nv21 = backNv21Buffer?.takeIf { it.size == size } ?: ByteArray(size).also { backNv21Buffer = it }
+            copyToNv21(imageProxy, nv21)
 
-                    val baseRotation = imageProxy.imageInfo.rotationDegrees
-                    val targetRotation = if (currentLensFacing == CameraSelector.LENS_FACING_FRONT) {
-                        (baseRotation + 90) % 360
-                    } else {
-                        (baseRotation + 270) % 360
-                    }
+            if (wantsPhoto) capturePhotoFromFrame(nv21, width, height, rotation)
+            if (wantsWebRtc) rtc?.pushFrame(nv21, width, height, rotation)
 
-                    val finalPhotoBytes = if (targetRotation != 0) {
-                        val bmp = BitmapFactory.decodeByteArray(rawBytes, 0, rawBytes.size)
-                        if (bmp != null) {
-                            val matrix = Matrix().apply { postRotate(targetRotation.toFloat()) }
-                            val rotatedBmp = Bitmap.createBitmap(bmp, 0, 0, bmp.width, bmp.height, matrix, true)
-                            val rotOut = ByteArrayOutputStream()
-                            rotatedBmp.compress(Bitmap.CompressFormat.JPEG, 95, rotOut)
-                            if (rotatedBmp != bmp) rotatedBmp.recycle()
-                            bmp.recycle()
-                            rotOut.toByteArray()
-                        } else {
-                            rawBytes
-                        }
-                    } else {
-                        rawBytes
-                    }
-
-                    synchronized(photoLock) {
-                        latestCapturedPhoto = finalPhotoBytes
-                        isPhotoRequested = false
-                        photoLatch?.countDown()
-                    }
-                    Log.i(TAG, "High-Quality photo captured successfully: ${finalPhotoBytes.size / 1024} KB")
-                } catch (e: Exception) {
-                    Log.e(TAG, "Error capturing photo frame", e)
-                    synchronized(photoLock) {
-                        isPhotoRequested = false
-                        photoLatch?.countDown()
+            if (wantsSnapshot && snapshotBusy.compareAndSet(false, true)) {
+                lastSnapshotTime = now
+                val copy = snapshotBuffer?.takeIf { it.size == size } ?: ByteArray(size).also { snapshotBuffer = it }
+                System.arraycopy(nv21, 0, copy, 0, size)
+                val quality = jpegQuality.get()
+                snapshotExecutor.execute {
+                    try {
+                        val out = ByteArrayOutputStream()
+                        YuvImage(copy, ImageFormat.NV21, width, height, null)
+                            .compressToJpeg(Rect(0, 0, width, height), quality, out)
+                        mjpegServer?.broadcastFrame(out.toByteArray())
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Snapshot encoding failed", e)
+                    } finally {
+                        snapshotBusy.set(false)
                     }
                 }
             }
 
-            if (isFront) {
-                val yuvImage = YuvImage(nv21, ImageFormat.NV21, width, height, null)
-                val out = ByteArrayOutputStream()
-                yuvImage.compressToJpeg(Rect(0, 0, width, height), jpegQuality.get(), out)
-                mjpegServer?.broadcastFrameFront(out.toByteArray())
-            } else {
-                // 1. PUSH DIRECTLY TO WEBRTC FIRST
-                if (webRtcManager?.hasActivePeer() == true) {
-                    val baseRotation = imageProxy.imageInfo.rotationDegrees
-                    val rotatedDegrees = if (currentLensFacing == CameraSelector.LENS_FACING_FRONT) {
-                        (baseRotation + 90) % 360
-                    } else {
-                        (baseRotation + 270) % 360
-                    }
-                    webRtcManager?.pushFrame(nv21, width, height, rotatedDegrees)
-                }
-
-                // 2. Non-blocking async JPEG snapshot ONLY when snapshot clients are active
-                if (mjpegServer?.hasActiveBackSnapshotClients() == true) {
-                    val now = System.currentTimeMillis()
-                    if (now - lastSnapshotTime >= 500) {
-                        lastSnapshotTime = now
-                        val snapshotCopy = nv21.clone()
-                        val q = jpegQuality.get()
-                        audioExecutor.submit {
-                            try {
-                                val yuvImage = YuvImage(snapshotCopy, ImageFormat.NV21, width, height, null)
-                                val out = ByteArrayOutputStream()
-                                yuvImage.compressToJpeg(Rect(0, 0, width, height), q, out)
-                                mjpegServer?.broadcastFrame(out.toByteArray())
-                            } catch (e: Exception) {}
-                        }
-                    }
-                }
-            }
-
-            // AI Object Detection analysis (~350ms interval to be gentle on CPU & battery)
-            if (!isFront && AiMotionDetector.isEnabled) {
-                val now = System.currentTimeMillis()
-                if (now - lastAiAnalysisTime >= 350L) {
-                    lastAiAnalysisTime = now
-                    val aiNv21 = nv21.clone()
-                    val baseRotation = imageProxy.imageInfo.rotationDegrees
-                    val targetRotation = if (currentLensFacing == CameraSelector.LENS_FACING_FRONT) {
-                        (baseRotation + 90) % 360
-                    } else {
-                        (baseRotation + 270) % 360
-                    }
-                    cameraExecutor.submit {
-                        try {
-                            val yuvImage = YuvImage(aiNv21, ImageFormat.NV21, width, height, null)
-                            val rawOut = ByteArrayOutputStream()
-                            yuvImage.compressToJpeg(Rect(0, 0, width, height), 60, rawOut)
-                            val rawBytes = rawOut.toByteArray()
-                            val bmp = BitmapFactory.decodeByteArray(rawBytes, 0, rawBytes.size)
-                            if (bmp != null) {
-                                val finalBmp = if (targetRotation != 0) {
-                                    val matrix = Matrix().apply { postRotate(targetRotation.toFloat()) }
-                                    val rotated = Bitmap.createBitmap(bmp, 0, 0, bmp.width, bmp.height, matrix, true)
-                                    if (rotated != bmp) bmp.recycle()
-                                    rotated
-                                } else {
-                                    bmp
-                                }
-                                AiMotionDetector.analyzeBitmap(finalBmp, this@CameraStreamingService)
-                            }
-                        } catch (e: Exception) {
-                            Log.e(TAG, "AI frame processing error", e)
-                        }
+            if (wantsAi && aiBusy.compareAndSet(false, true)) {
+                lastAiAnalysisTime = now
+                val copy = aiFrame?.takeIf { it.size == size } ?: ByteArray(size).also { aiFrame = it }
+                System.arraycopy(nv21, 0, copy, 0, size)
+                aiExecutor.execute {
+                    try {
+                        analyzeFrame(copy, width, height, rotation, aiEnabled)
+                    } catch (e: Exception) {
+                        Log.e(TAG, "AI frame processing error", e)
+                    } finally {
+                        aiBusy.set(false)
                     }
                 }
             }
@@ -1112,17 +1312,187 @@ class CameraStreamingService : LifecycleService(), CameraController, LocationLis
         }
     }
 
-    fun triggerAlarmSnapshotUpload() {
-        cameraExecutor.submit {
+    private fun capturePhotoFromFrame(nv21: ByteArray, width: Int, height: Int, rotation: Int) {
+        try {
+            val photo = encodeFrameJpeg(nv21, width, height, rotation, 95)
+            synchronized(photoLock) {
+                latestCapturedPhoto = photo
+                isPhotoRequested = false
+                photoLatch?.countDown()
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error capturing photo frame", e)
+            synchronized(photoLock) {
+                isPhotoRequested = false
+                photoLatch?.countDown()
+            }
+        }
+    }
+
+    /** Runs on aiExecutor. [frame] stays untouched until aiBusy is cleared. */
+    private fun analyzeFrame(frame: ByteArray, width: Int, height: Int, rotation: Int, aiEnabled: Boolean) {
+        val grid = Nv21.lumaGrid(frame, width, height)
+        processNightBoost(Nv21.meanOf(grid))
+        if (!aiEnabled) return
+
+        // A viewer sees live boxes, so the gate only applies while nobody is watching.
+        val now = SystemClock.elapsedRealtime()
+        val shouldInfer = motionGate.shouldInfer(grid, now) || cameraPowerState == CameraPowerState.FULL
+        if (!shouldInfer) return
+
+        val step = Nv21.scaleStep(width, height, AI_MAX_EDGE)
+        val srcW = width / step
+        val srcH = height / step
+        val (outW, outH) = if (rotation == 90 || rotation == 270) srcH to srcW else srcW to srcH
+        val pixels = aiPixels?.takeIf { it.size == outW * outH } ?: IntArray(outW * outH).also { aiPixels = it }
+        Nv21.toArgb(frame, width, height, step, rotation, pixels)
+        val bitmap = aiBitmap?.takeIf { it.width == outW && it.height == outH }
+            ?: Bitmap.createBitmap(outW, outH, Bitmap.Config.ARGB_8888).also { aiBitmap = it }
+        bitmap.setPixels(pixels, 0, outW, 0, 0, outW, outH)
+
+        val targetSeen = AiMotionDetector.analyzeBitmap(bitmap, this) {
+            encodeFrameJpeg(frame, width, height, rotation, 85)
+        }
+        if (targetSeen) motionGate.holdFor(now)
+    }
+
+    private fun processNightBoost(avgLuma: Int) {
+        if (!autoNightBoostEnabled.get()) return
+        if (avgLuma < 28) {
+            darkFrameCount++
+            brightFrameCount = 0
+            if (darkFrameCount >= 3 && !isNightBoostActive) {
+                isNightBoostActive = true
+                val maxRange = getExposureRange().second
+                setExposureCompensation((maxRange * 0.75f).toInt().coerceAtLeast(2))
+                if (autoTorchNightEnabled.get() && !isFlashlightActive()) {
+                    isAutoTorchActive = true
+                    toggleFlashlight()
+                }
+                Log.i(TAG, "Auto night boost on (avgLuma=$avgLuma)")
+            }
+        } else if (avgLuma > 65) {
+            brightFrameCount++
+            darkFrameCount = 0
+            if (brightFrameCount >= 3 && isNightBoostActive) {
+                isNightBoostActive = false
+                setExposureCompensation(0)
+                if (isAutoTorchActive && isFlashlightActive()) {
+                    isAutoTorchActive = false
+                    toggleFlashlight()
+                }
+                Log.i(TAG, "Auto night boost off (avgLuma=$avgLuma)")
+            }
+        }
+    }
+    /** [photo] is a ready JPEG of the frame that caused the alarm. */
+    fun triggerAlarmActions(message: String, photo: ByteArray?) {
+        // 1. START VIDEO IMMEDIATELY (Main thread to avoid any executor queuing delays)
+        if (AiMotionDetector.isAutoVideoDriveEnabled && !isCurrentlyRecordingAlarmVideo) {
+            mainHandler.post { startAlarmVideoRecording() }
+        }
+
+        // Use a background thread for the rest so we don't block the camera pipeline
+        recordingExecutor.execute {
             try {
-                Log.i(TAG, "Triggering AI Alarm high-res snapshot & Drive upload...")
-                val photo = takeHighQualityPhoto()
-                if (photo != null && photo.isNotEmpty()) {
+                Log.i(TAG, "Processing AI alarm notification and photo")
+                if (AiMotionDetector.isWebhookAlarmEnabled && WebhookManager.alarmWebhookEnabled) {
+                    WebhookManager.sendAlarm(message, photo) { _, _ -> }
+                }
+                if (photo != null && photo.isNotEmpty() &&
+                    AiMotionDetector.isAutoDriveEnabled && GoogleDriveBackupManager.isAutoBackupEnabled) {
                     GoogleDriveBackupManager.uploadPhotoAsync(this, photo)
-                    Log.i(TAG, "AI Alarm snapshot sent to Google Drive upload queue (${photo.size / 1024} KB)")
                 }
             } catch (e: Exception) {
-                Log.e(TAG, "Error in AI alarm snapshot upload", e)
+                Log.e(TAG, "Error in AI alarm background actions", e)
+            }
+        }
+    }
+
+    /** Full-resolution JPEG of a raw frame, upright. */
+    private fun encodeFrameJpeg(nv21: ByteArray, width: Int, height: Int, rotation: Int, quality: Int): ByteArray {
+        val rawOut = ByteArrayOutputStream()
+        YuvImage(nv21, ImageFormat.NV21, width, height, null)
+            .compressToJpeg(Rect(0, 0, width, height), quality, rawOut)
+        val rawBytes = rawOut.toByteArray()
+        if (rotation == 0) return rawBytes
+        val bmp = BitmapFactory.decodeByteArray(rawBytes, 0, rawBytes.size) ?: return rawBytes
+        val matrix = Matrix().apply { postRotate(rotation.toFloat()) }
+        val rotated = Bitmap.createBitmap(bmp, 0, 0, bmp.width, bmp.height, matrix, true)
+        val rotOut = ByteArrayOutputStream()
+        rotated.compress(Bitmap.CompressFormat.JPEG, quality, rotOut)
+        if (rotated != bmp) rotated.recycle()
+        bmp.recycle()
+        return rotOut.toByteArray()
+    }
+
+    private fun startAlarmVideoRecording() {
+        val vCap = videoCapture ?: return
+        if (isCurrentlyRecordingAlarmVideo) return
+
+        // Record to a local file in cache first - this is faster to start than MediaStore
+        val videoFile = File(externalCacheDir, "alarm_${System.currentTimeMillis()}.mp4")
+        val outputOptions = FileOutputOptions.Builder(videoFile).build()
+
+        try {
+            isCurrentlyRecordingAlarmVideo = true
+            val pendingRecording = vCap.output.prepareRecording(this, outputOptions)
+            
+            if (ActivityCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+                pendingRecording.withAudioEnabled()
+            }
+
+            currentRecording = pendingRecording.start(recordingExecutor) { event ->
+                when (event) {
+                    is VideoRecordEvent.Finalize -> {
+                        isCurrentlyRecordingAlarmVideo = false
+                        if (!event.hasError()) {
+                            Log.i(TAG, "Alarm video recording finalized: ${videoFile.absolutePath}")
+                            uploadVideoFileToDrive(videoFile)
+                        } else {
+                            Log.e(TAG, "Alarm video recording error: ${event.error}")
+                            if (videoFile.exists()) videoFile.delete()
+                        }
+                    }
+                }
+            }
+
+            Log.i(TAG, "Started alarm video recording to file...")
+            
+            // Auto-stop after 10 seconds
+            android.os.Handler(mainLooper).postDelayed({
+                stopAlarmVideoRecording()
+            }, 10000)
+
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to start video recording", e)
+            isCurrentlyRecordingAlarmVideo = false
+        }
+    }
+
+    private fun stopAlarmVideoRecording() {
+        currentRecording?.stop()
+        currentRecording = null
+    }
+
+    private fun uploadVideoFileToDrive(file: File) {
+        recordingExecutor.submit {
+            try {
+                if (!file.exists()) return@submit
+                val bytes = file.readBytes()
+                GoogleDriveBackupManager.uploadClipAsync(
+                    this,
+                    bytes,
+                    file.name,
+                    "video/mp4"
+                ) { success, msg ->
+                    Log.i(TAG, "Alarm video upload result: success=$success ($msg)")
+                    // Delete local file after upload attempts
+                    if (file.exists()) file.delete()
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Error uploading video file to Drive", e)
+                if (file.exists()) file.delete()
             }
         }
     }
@@ -1169,26 +1539,30 @@ class CameraStreamingService : LifecycleService(), CameraController, LocationLis
 
             audioExecutor.execute {
                 val buffer = ByteArray(4096)
-                while (isRecordingAudio.get()) {
-                    val rec = audioRecord ?: break
-                    val read = rec.read(buffer, 0, buffer.size)
-                    if (read > 0) {
+                try {
+                    while (isRecordingAudio.get()) {
+                        val read = record.read(buffer, 0, buffer.size)
+                        if (read < 0) break
+                        if (read == 0) continue
                         val chunk = ByteArray(read)
                         // Apply 2.5x gain boost with soft limiter to 16-bit PCM samples
-                        for (i in 0 until read step 2) {
-                            if (i + 1 < read) {
-                                val low = buffer[i].toInt() and 0xFF
-                                val high = buffer[i + 1].toInt()
-                                val sample = ((high shl 8) or low).toShort()
-                                val boosted = (sample * 2.5f).toInt().coerceIn(-32768, 32767).toShort()
-                                chunk[i] = (boosted.toInt() and 0xFF).toByte()
-                                chunk[i + 1] = ((boosted.toInt() shr 8) and 0xFF).toByte()
-                            }
+                        var i = 0
+                        while (i + 1 < read) {
+                            val low = buffer[i].toInt() and 0xFF
+                            val high = buffer[i + 1].toInt()
+                            val sample = ((high shl 8) or low).toShort()
+                            val boosted = (sample * 2.5f).toInt().coerceIn(-32768, 32767)
+                            chunk[i] = (boosted and 0xFF).toByte()
+                            chunk[i + 1] = ((boosted shr 8) and 0xFF).toByte()
+                            i += 2
                         }
                         mjpegServer?.broadcastAudio(chunk)
-                    } else if (read < 0) {
-                        break
                     }
+                } catch (e: Exception) {
+                    Log.w(TAG, "PCM microphone loop stopped", e)
+                } finally {
+                    // Released here, on the reading thread, so a concurrent stop can't free it mid-read.
+                    try { record.release() } catch (_: Exception) {}
                 }
             }
         } catch (e: Exception) {
@@ -1202,9 +1576,9 @@ class CameraStreamingService : LifecycleService(), CameraController, LocationLis
         if (!force && (mjpegServer?.hasMicClients() == true)) return
 
         isRecordingAudio.set(false)
+        // stop() unblocks read(); the reading thread then releases the recorder.
         try {
             audioRecord?.stop()
-            audioRecord?.release()
         } catch (e: Exception) {
             Log.e(TAG, "Error stopping AudioRecord", e)
         }
@@ -1215,11 +1589,43 @@ class CameraStreamingService : LifecycleService(), CameraController, LocationLis
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val serviceChannel = NotificationChannel(
-                CHANNEL_ID, "Camera Streaming Channel", NotificationManager.IMPORTANCE_DEFAULT
+                CHANNEL_ID, "Kamera-Stream", NotificationManager.IMPORTANCE_LOW
             )
             val manager = getSystemService(NotificationManager::class.java)
             manager.createNotificationChannel(serviceChannel)
         }
+    }
+
+    private fun buildNotification(text: String): Notification {
+        val open = PendingIntent.getActivity(
+            this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE
+        )
+        val stop = PendingIntent.getService(
+            this, 1,
+            Intent(this, CameraStreamingService::class.java).setAction(ACTION_STOP),
+            PendingIntent.FLAG_IMMUTABLE
+        )
+        return NotificationCompat.Builder(this, CHANNEL_ID)
+            .setContentTitle("Phone as Cam")
+            .setContentText(text)
+            .setSmallIcon(R.drawable.ic_launcher_foreground)
+            .setContentIntent(open)
+            .addAction(0, "Stoppen", stop)
+            .setOngoing(true)
+            .setOnlyAlertOnce(true)
+            .setSilent(true)
+            .build()
+    }
+
+    private fun updateNotification() {
+        val port = mjpegServer?.listeningPort ?: return
+        val text = when (cameraPowerState) {
+            CameraPowerState.FULL -> "Live auf Port $port"
+            CameraPowerState.LOW -> "KI wacht, Port $port"
+            CameraPowerState.OFF -> "Bereit, Kamera aus, Port $port"
+        }
+        (getSystemService(NOTIFICATION_SERVICE) as NotificationManager)
+            .notify(NOTIFICATION_ID, buildNotification(text))
     }
     
     private fun applyTorchState(enabled: Boolean) {
@@ -1381,6 +1787,7 @@ class CameraStreamingService : LifecycleService(), CameraController, LocationLis
                 previousVolume = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
 
                 audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
+                webRtcManager?.setTalkbackEnabled(true)
 
                 // Route audio to loudspeaker
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
@@ -1414,6 +1821,7 @@ class CameraStreamingService : LifecycleService(), CameraController, LocationLis
                 fallbackSpeakerTrack?.stop()
                 fallbackSpeakerTrack?.release()
                 fallbackSpeakerTrack = null
+                webRtcManager?.setTalkbackEnabled(false)
                 Log.i(TAG, "Megafon DEACTIVATED")
             }
         } catch (e: Exception) {
@@ -1481,25 +1889,41 @@ class CameraStreamingService : LifecycleService(), CameraController, LocationLis
     }
 
     override fun onDestroy() {
-        super.onDestroy()
+        mainHandler.removeCallbacksAndMessages(null)
+        runningInstance = null
         activeViewers.value = 0
+        isRunning.value = false
+        try { unregisterReceiver(batteryReceiver) } catch (_: Exception) {}
+        AlarmSoundManager.stopSiren()
+        P2pSignalingManager.disconnect(permanent = true)
         if (isMegafonActive.get()) {
             setMegafon(false)
         }
         locationManager?.removeUpdates(this)
-        
         stopMicIfIdle(force = true)
-        
+        try { currentRecording?.stop() } catch (_: Exception) {}
+        currentRecording = null
+
         try {
             if (wakeLock?.isHeld == true) wakeLock?.release()
             if (wifiLock?.isHeld == true) wifiLock?.release()
         } catch (e: Exception) {
             Log.e(TAG, "Error releasing WakeLock / WifiLock", e)
         }
-        
-        webRtcManager?.release()
+
         mjpegServer?.stop()
+        mjpegServer = null
+        // WebRTC teardown can block on native threads, so it must not run on the main thread.
+        val rtc = webRtcManager
+        webRtcManager = null
+        cameraExecutor.execute {
+            try { rtc?.release() } catch (e: Exception) { Log.w(TAG, "WebRTC release failed", e) }
+        }
         cameraExecutor.shutdown()
         audioExecutor.shutdown()
+        aiExecutor.shutdown()
+        snapshotExecutor.shutdown()
+        recordingExecutor.shutdown()
+        super.onDestroy()
     }
 }

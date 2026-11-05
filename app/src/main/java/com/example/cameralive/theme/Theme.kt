@@ -1,50 +1,54 @@
 package com.example.cameralive.theme
 
-import android.os.Build
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Shapes
 import androidx.compose.material3.darkColorScheme
-import androidx.compose.material3.dynamicDarkColorScheme
-import androidx.compose.material3.dynamicLightColorScheme
-import androidx.compose.material3.lightColorScheme
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
-import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.unit.dp
 
-private val DarkColorScheme = darkColorScheme(primary = Purple80, secondary = PurpleGrey80, tertiary = Pink80)
+private val NightWatchColors = darkColorScheme(
+    primary = TextPrimary,
+    onPrimary = Ink,
+    primaryContainer = Surface3,
+    onPrimaryContainer = TextPrimary,
+    secondary = Amber,
+    onSecondary = OnAmber,
+    secondaryContainer = Surface3,
+    onSecondaryContainer = TextPrimary,
+    tertiary = Amber,
+    onTertiary = OnAmber,
+    background = Ink,
+    onBackground = TextPrimary,
+    surface = Ink,
+    onSurface = TextPrimary,
+    surfaceVariant = Surface1,
+    onSurfaceVariant = TextSecondary,
+    surfaceContainer = Surface1,
+    surfaceContainerLow = Surface1,
+    surfaceContainerHigh = Surface2,
+    surfaceContainerHighest = Surface2,
+    outline = Surface3,
+    outlineVariant = Surface2,
+    error = Bad,
+    onError = TextPrimary,
+)
 
-private val LightColorScheme =
-  lightColorScheme(
-    primary = Purple40,
-    secondary = PurpleGrey40,
-    tertiary = Pink40,
+private val NightWatchShapes = Shapes(
+    extraSmall = RoundedCornerShape(6.dp),
+    small = RoundedCornerShape(8.dp),
+    medium = RoundedCornerShape(12.dp),
+    large = RoundedCornerShape(16.dp),
+    extraLarge = RoundedCornerShape(20.dp),
+)
 
-    /* Other default colors to override
-    background = Color(0xFFFFFBFE),
-    surface = Color(0xFFFFFBFE),
-    onPrimary = Color.White,
-    onSecondary = Color.White,
-    onTertiary = Color.White,
-    onBackground = Color(0xFF1C1B1F),
-    onSurface = Color(0xFF1C1B1F),
-    */
-  )
-
+/** The app is a dark instrument on purpose: it runs on a camera phone, often at night. */
 @Composable
-fun CameraLiveTheme(
-  darkTheme: Boolean = isSystemInDarkTheme(),
-  // Dynamic color is available on Android 12+
-  dynamicColor: Boolean = true,
-  content: @Composable () -> Unit,
-) {
-  val colorScheme =
-    when {
-      dynamicColor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S -> {
-        val context = LocalContext.current
-        if (darkTheme) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
-      }
-      darkTheme -> DarkColorScheme
-      else -> LightColorScheme
-    }
-
-  MaterialTheme(colorScheme = colorScheme, typography = Typography, content = content)
+fun CameraLiveTheme(content: @Composable () -> Unit) {
+    MaterialTheme(
+        colorScheme = NightWatchColors,
+        typography = Typography,
+        shapes = NightWatchShapes,
+        content = content,
+    )
 }

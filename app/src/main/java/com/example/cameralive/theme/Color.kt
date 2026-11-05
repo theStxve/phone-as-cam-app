@@ -2,10 +2,16 @@ package com.example.cameralive.theme
 
 import androidx.compose.ui.graphics.Color
 
-val Purple80 = Color(0xFFD0BCFF)
-val PurpleGrey80 = Color(0xFFCCC2DC)
-val Pink80 = Color(0xFFEFB8C8)
-
-val Purple40 = Color(0xFF6650a4)
-val PurpleGrey40 = Color(0xFF625b71)
-val Pink40 = Color(0xFF7D5260)
+// Graphite ramp for every surface, one sodium-lamp amber as the only accent.
+val Ink = Color(0xFF0F0F10)
+val Surface1 = Color(0xFF19191B)
+val Surface2 = Color(0xFF232325)
+val Surface3 = Color(0xFF2C2C2F)
+val Hairline = Color(0x14EDEDED)
+val TextPrimary = Color(0xFFEDEDED)
+val TextSecondary = Color(0xFFA1A1A6)
+val TextMuted = Color(0xFF85858B)
+val Amber = Color(0xFFE8A33D)
+val OnAmber = Color(0xFF1A1204)
+val Good = Color(0xFF4CC38A)
+val Bad = Color(0xFFE5484D)

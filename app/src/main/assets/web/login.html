@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#0f0f10">
+    <title>Phone as Cam</title>
+    <style>
+        @font-face { font-family: "Plex Sans"; src: url(/static/plex-sans-400.woff2) format("woff2"); font-weight: 400; font-display: swap; }
+        @font-face { font-family: "Plex Sans"; src: url(/static/plex-sans-500.woff2) format("woff2"); font-weight: 500; font-display: swap; }
+        @font-face { font-family: "Plex Mono"; src: url(/static/plex-mono-500.woff2) format("woff2"); font-weight: 500; font-display: swap; }
+        * { box-sizing: border-box; }
+        html, body { margin: 0; height: 100%; background: #0f0f10; color: #ededed; font: 400 14px/20px "Plex Sans", -apple-system, "Segoe UI", Roboto, sans-serif; }
+        body { display: flex; align-items: center; justify-content: center; padding: 16px; }
+        .card { --c: #e8a33d; width: 360px; max-width: 100%; padding: 32px;
+            background: linear-gradient(var(--c),var(--c)) top left/16px 2px, linear-gradient(var(--c),var(--c)) top left/2px 16px, linear-gradient(var(--c),var(--c)) top right/16px 2px, linear-gradient(var(--c),var(--c)) top right/2px 16px, linear-gradient(var(--c),var(--c)) bottom left/16px 2px, linear-gradient(var(--c),var(--c)) bottom left/2px 16px, linear-gradient(var(--c),var(--c)) bottom right/16px 2px, linear-gradient(var(--c),var(--c)) bottom right/2px 16px;
+            background-repeat: no-repeat; }
+        h1 { margin: 0 0 4px; font-size: 20px; line-height: 28px; font-weight: 500; }
+        p { margin: 0 0 24px; font-size: 13px; color: #a1a1a6; }
+        label { display: block; margin-bottom: 4px; font-size: 13px; color: #a1a1a6; }
+        input { width: 100%; height: 56px; padding: 0 16px; border-radius: 8px; background: #232325; border: 1px solid rgba(237,237,237,0.08); color: #ededed; font: 500 24px "Plex Mono", ui-monospace, monospace; letter-spacing: 0.3em; }
+        input:focus { outline: 2px solid #e8a33d; outline-offset: 2px; }
+        button { width: 100%; height: 44px; margin-top: 16px; border: 0; border-radius: 8px; background: #ededed; color: #141415; font: 500 14px "Plex Sans", sans-serif; cursor: pointer; transition: background-color 120ms cubic-bezier(0.2,0,0,1); }
+        button:hover { background: #fff; }
+        button:disabled { opacity: 0.6; cursor: progress; }
+        .error { min-height: 20px; margin-top: 12px; font-size: 13px; color: #e5484d; }
+        .meta { margin-top: 12px; font-size: 12px; line-height: 16px; color: #85858b; }
+        code { font-family: "Plex Mono", ui-monospace, monospace; color: #a1a1a6; }
+        .shake { animation: shake 240ms cubic-bezier(0.2,0,0,1); }
+        @keyframes shake { 25% { transform: translateX(-4px); } 75% { transform: translateX(4px); } }
+        @media (prefers-reduced-motion: reduce) { .shake { animation: none; } }
+    </style>
+</head>
+<body>
+    <main class="card" id="lockCard">
+        <h1>Phone as Cam</h1>
+        <p>Die PIN steht in der App auf dem Kamera-Handy</p>
+        <form onsubmit="handleAuth(event)">
+            <label for="pinInput">PIN</label>
+            <input type="password" id="pinInput" autocomplete="off" autofocus inputmode="numeric">
+            <button type="submit" id="submitBtn">Entsperren</button>
+        </form>
+        <div class="error" id="errorMsg" role="alert"></div>
+        <div class="meta">Kamera-ID <code>{{room}}</code></div>
+    </main>
+    <script>
+        const card = document.getElementById('lockCard');
+        const pinInput = document.getElementById('pinInput');
+        const errorMsg = document.getElementById('errorMsg');
+        const submitBtn = document.getElementById('submitBtn');
+
+        const urlParams = new URLSearchParams(window.location.search);
+        const hashParams = new URLSearchParams(window.location.hash.replace('#', '?'));
+        const urlPin = urlParams.get('pin') || hashParams.get('pin');
+        if (urlPin) {
+            pinInput.value = urlPin;
+            authenticate(urlPin);
+        }
+
+        function handleAuth(e) {
+            e.preventDefault();
+            const pin = pinInput.value.trim();
+            if (!pin) { showError('PIN fehlt'); return; }
+            authenticate(pin);
+        }
+
+        async function authenticate(pin) {
+            errorMsg.textContent = '';
+            submitBtn.disabled = true;
+            submitBtn.textContent = 'Prüfe';
+            try {
+                const res = await fetch('/auth', { method: 'POST', headers: { 'x-auth-pin': pin } });
+                const data = await res.json();
+                if (res.ok && data.authenticated) {
+                    window.location.replace('/');
+                    return;
+                }
+                showError(data.error || 'PIN ist falsch');
+            } catch (err) {
+                showError('Keine Verbindung zum Handy');
+            }
+            submitBtn.disabled = false;
+            submitBtn.textContent = 'Entsperren';
+        }
+
+        function showError(msg) {
+            errorMsg.textContent = msg;
+            card.classList.remove('shake');
+            void card.offsetWidth;
+            card.classList.add('shake');
+            pinInput.select();
+        }
+    </script>
+</body>
+</html>

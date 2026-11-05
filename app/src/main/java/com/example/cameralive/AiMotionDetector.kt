@@ -43,11 +43,22 @@ object AiMotionDetector {
     private const val KEY_COOLDOWN_SEC = "KEY_COOLDOWN_SEC"
     private const val KEY_ALARM_WEBHOOK = "KEY_ALARM_WEBHOOK"
     private const val KEY_AUTO_CLIP = "KEY_AUTO_CLIP"
+    private const val KEY_AUTO_VIDEO_DRIVE = "KEY_AUTO_VIDEO_DRIVE"
     private const val KEY_AUTO_DRIVE = "KEY_AUTO_DRIVE"
+    private const val KEY_AUTO_SIREN = "KEY_AUTO_SIREN"
+    private const val KEY_ZONE_ENABLED = "KEY_ZONE_ENABLED"
+    private const val KEY_ZONE_LEFT = "KEY_ZONE_LEFT"
+    private const val KEY_ZONE_TOP = "KEY_ZONE_TOP"
+    private const val KEY_ZONE_RIGHT = "KEY_ZONE_RIGHT"
+    private const val KEY_ZONE_BOTTOM = "KEY_ZONE_BOTTOM"
 
     private val executor = Executors.newSingleThreadExecutor()
     private val isProcessing = AtomicBoolean(false)
     private var detector: ObjectDetector? = null
+
+    /** True when the model can't run here. The camera then doesn't stay on for the AI's sake. */
+    @Volatile var isUnavailable = false
+        private set
 
     // Reactive Compose / State properties
     var isEnabled by mutableStateOf(true)
@@ -56,7 +67,16 @@ object AiMotionDetector {
     var cooldownSeconds by mutableIntStateOf(30)
     var isWebhookAlarmEnabled by mutableStateOf(true)
     var isAutoClipEnabled by mutableStateOf(true)
+    var isAutoVideoDriveEnabled by mutableStateOf(false)
     var isAutoDriveEnabled by mutableStateOf(true)
+    var isAutoSirenEnabled by mutableStateOf(false)
+
+    // Activity Zone (0.0 .. 1.0 normalized coordinates)
+    var isZoneEnabled by mutableStateOf(false)
+    var zoneLeft by mutableFloatStateOf(0.10f)
+    var zoneTop by mutableFloatStateOf(0.10f)
+    var zoneRight by mutableFloatStateOf(0.90f)
+    var zoneBottom by mutableFloatStateOf(0.90f)
 
     var lastDetectionStatus by mutableStateOf("Initialisiere KI-Modell...")
     var lastAlarmTimestamp by mutableStateOf(0L)
@@ -79,7 +99,14 @@ object AiMotionDetector {
         cooldownSeconds = prefs.getInt(KEY_COOLDOWN_SEC, 30)
         isWebhookAlarmEnabled = prefs.getBoolean(KEY_ALARM_WEBHOOK, true)
         isAutoClipEnabled = prefs.getBoolean(KEY_AUTO_CLIP, true)
+        isAutoVideoDriveEnabled = prefs.getBoolean(KEY_AUTO_VIDEO_DRIVE, false)
         isAutoDriveEnabled = prefs.getBoolean(KEY_AUTO_DRIVE, true)
+        isAutoSirenEnabled = prefs.getBoolean(KEY_AUTO_SIREN, false)
+        isZoneEnabled = prefs.getBoolean(KEY_ZONE_ENABLED, false)
+        zoneLeft = prefs.getFloat(KEY_ZONE_LEFT, 0.10f)
+        zoneTop = prefs.getFloat(KEY_ZONE_TOP, 0.10f)
+        zoneRight = prefs.getFloat(KEY_ZONE_RIGHT, 0.90f)
+        zoneBottom = prefs.getFloat(KEY_ZONE_BOTTOM, 0.90f)
 
         initDetector(context.applicationContext)
     }
@@ -93,7 +120,14 @@ object AiMotionDetector {
             .putInt(KEY_COOLDOWN_SEC, cooldownSeconds)
             .putBoolean(KEY_ALARM_WEBHOOK, isWebhookAlarmEnabled)
             .putBoolean(KEY_AUTO_CLIP, isAutoClipEnabled)
+            .putBoolean(KEY_AUTO_VIDEO_DRIVE, isAutoVideoDriveEnabled)
             .putBoolean(KEY_AUTO_DRIVE, isAutoDriveEnabled)
+            .putBoolean(KEY_AUTO_SIREN, isAutoSirenEnabled)
+            .putBoolean(KEY_ZONE_ENABLED, isZoneEnabled)
+            .putFloat(KEY_ZONE_LEFT, zoneLeft)
+            .putFloat(KEY_ZONE_TOP, zoneTop)
+            .putFloat(KEY_ZONE_RIGHT, zoneRight)
+            .putFloat(KEY_ZONE_BOTTOM, zoneBottom)
             .apply()
     }
 
@@ -111,37 +145,44 @@ object AiMotionDetector {
                     .setScoreThreshold(0.30f) // Keep low for tracking, filter in logic
                     .build()
 
+                detector?.close()
                 detector = ObjectDetector.createFromOptions(context, options)
                 lastDetectionStatus = "Bereit (EfficientDet-Lite0)"
                 Log.i(TAG, "MediaPipe ObjectDetector initialized successfully with $MODEL_NAME")
-            } catch (e: Exception) {
-                lastDetectionStatus = "Fehler: ${e.localizedMessage}"
+            } catch (e: Throwable) {
+                // Throwable on purpose: a missing native library is an Error, not an Exception.
+                // MediaPipe ships no x86_64 build, for example.
+                isUnavailable = true
+                currentBoxes = emptyList()
+                lastDetectionStatus = "Auf diesem Gerät nicht verfügbar"
                 Log.e(TAG, "Failed to initialize MediaPipe ObjectDetector", e)
             }
         }
     }
 
+    /**
+     * Runs one inference. [alarmPhoto] builds the alarm image only when an alarm really fires.
+     * Returns true if an alarm target is in the picture, cooldown or not.
+     */
     fun analyzeBitmap(
         bitmap: Bitmap,
-        service: CameraStreamingService?
-    ) {
+        service: CameraStreamingService?,
+        alarmPhoto: () -> ByteArray?
+    ): Boolean {
         if (!isEnabled || detector == null) {
             currentBoxes = emptyList()
-            return
+            return false
         }
 
         if (!isProcessing.compareAndSet(false, true)) {
             // Drop frame if previous analysis is still ongoing
-            return
+            return false
         }
 
-        executor.submit {
-            try {
-                val det = detector
-                if (det == null) return@submit
-
-                val mpImage = BitmapImageBuilder(bitmap).build()
-                val results = det.detect(mpImage)
+        try {
+            val det = detector ?: return false
+            val mpImage = BitmapImageBuilder(bitmap).build()
+            val results = det.detect(mpImage)
 
                 val bWidth = bitmap.width.toFloat()
                 val bHeight = bitmap.height.toFloat()
@@ -171,8 +212,17 @@ object AiMotionDetector {
                         )
                     )
 
+                    // Check if this detection is within the active activity zone
+                    val inZone = if (isZoneEnabled) {
+                        val centerX = (normLeft + normRight) / 2f
+                        val centerY = (normTop + normBottom) / 2f
+                        centerX in zoneLeft..zoneRight && centerY in zoneTop..zoneBottom
+                    } else {
+                        true
+                    }
+
                     // Check if this detection matches our target alarm filter
-                    if (score >= confidenceThreshold && isTargetClass(label)) {
+                    if (score >= confidenceThreshold && isTargetClass(label) && inZone) {
                         val currentMax = highestTargetDetection?.second ?: 0f
                         if (score > currentMax) {
                             highestTargetDetection = Pair(cat.categoryName(), score)
@@ -183,14 +233,13 @@ object AiMotionDetector {
                 currentBoxes = detectedList
                 lastDetectionTimeMs = System.currentTimeMillis()
 
-                if (detectedList.isNotEmpty()) {
-                    val top = detectedList.maxByOrNull { it.score }
-                    if (top != null) {
-                        lastDetectionStatus = "${top.label} (${(top.score * 100).toInt()}%) erkannt"
-                    }
+                val top = detectedList.maxByOrNull { it.score }
+                val status = if (top != null) {
+                    "${top.label} (${(top.score * 100).toInt()}%) erkannt"
                 } else {
-                    lastDetectionStatus = "Kein Objekt erkannt"
+                    "Kein Objekt erkannt"
                 }
+                if (status != lastDetectionStatus) lastDetectionStatus = status
 
                 // If alarm target matched -> check cooldown and trigger actions
                 if (highestTargetDetection != null) {
@@ -208,25 +257,33 @@ object AiMotionDetector {
 
                         Log.i(TAG, "🚨 Alarm Triggered: $label ($pct%) at $timeStr")
 
-                        // 1. Send Webhook Alarm
-                        if (isWebhookAlarmEnabled) {
-                            val msg = "$label erkannt mit $pct% Zuverlässigkeit!"
-                            WebhookManager.sendAlarm(msg) { success, res ->
-                                Log.i(TAG, "AI Alarm Webhook sent: success=$success ($res)")
+                        // 1 & 2. Trigger Snapshot, Webhook & Google Drive Backup
+                        if (service != null) {
+                            val msg = "$label erkannt mit $pct% Zuverlässigkeit"
+                            val photo = try { alarmPhoto() } catch (e: Exception) {
+                                Log.w(TAG, "Alarm photo failed", e)
+                                null
+                            }
+                            service.triggerAlarmActions(msg, photo)
+                        } else {
+                            if (isWebhookAlarmEnabled) {
+                                val msg = "$label erkannt mit $pct% Zuverlässigkeit"
+                                WebhookManager.sendAlarm(msg)
                             }
                         }
 
-                        // 2. Trigger Auto-Snapshot & Google Drive Upload
-                        if (isAutoDriveEnabled && service != null) {
-                            service.triggerAlarmSnapshotUpload()
+                        // 3. Trigger Deterrent Siren Sound if enabled
+                        if (isAutoSirenEnabled) {
+                            AlarmSoundManager.playSiren(4)
                         }
                     }
                 }
-            } catch (e: Exception) {
-                Log.e(TAG, "Error during AI frame analysis", e)
-            } finally {
-                isProcessing.set(false)
-            }
+                return highestTargetDetection != null
+        } catch (e: Exception) {
+            Log.e(TAG, "Error during AI frame analysis", e)
+            return false
+        } finally {
+            isProcessing.set(false)
         }
     }
 
@@ -240,9 +297,9 @@ object AiMotionDetector {
     }
 
     fun getBoxesJson(): String {
-        // Return JSON array of active bounding boxes if detection is fresh (< 1200ms old)
+        // Return JSON array of active bounding boxes if the last detection is still fresh
         val now = System.currentTimeMillis()
-        if (now - lastDetectionTimeMs > 1200L) {
+        if (now - lastDetectionTimeMs > 2500L) {
             return "[]"
         }
         val array = JSONArray()
@@ -268,11 +325,19 @@ object AiMotionDetector {
         obj.put("cooldown", cooldownSeconds)
         obj.put("webhookAlarm", isWebhookAlarmEnabled)
         obj.put("autoClip", isAutoClipEnabled)
+        obj.put("autoVideoDrive", isAutoVideoDriveEnabled)
         obj.put("autoDrive", isAutoDriveEnabled)
+        obj.put("autoSiren", isAutoSirenEnabled)
+        obj.put("zoneEnabled", isZoneEnabled)
+        obj.put("zoneLeft", zoneLeft)
+        obj.put("zoneTop", zoneTop)
+        obj.put("zoneRight", zoneRight)
+        obj.put("zoneBottom", zoneBottom)
         obj.put("status", lastDetectionStatus)
         obj.put("lastAlarm", lastAlarmLabel)
         obj.put("lastAlarmTime", lastAlarmTimestamp)
         obj.put("pendingClipTrigger", pendingClipTriggerTimestamp)
+        obj.put("sirenPlaying", AlarmSoundManager.isSirenPlaying())
         return obj.toString()
     }
 }
